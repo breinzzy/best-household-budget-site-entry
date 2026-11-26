@@ -1331,7 +1331,22 @@ export interface LoadMiss {
 }
 
 /**
- * The files a first load fetches, in the order the walk reaches them (the header's Load block says the
+ * The files a first load fetches, in the order reached, and the first-load references naming no file of app/; then
+ * the files the page's literal import() calls fetch later, and what of theirs names no file of app/.
+ */
+export interface FirstLoadPaths {
+  paths: string[];
+  missing: LoadMiss[];
+  /** The files a dynamic import() with a literal specifier reaches, with the static imports they pull in, in the order reached; none of the first load's. */
+  later: string[];
+  /** The import() specifiers, and the later modules' imports, that name no file of app/. */
+  laterMissing: LoadMiss[];
+  /** Where each import() with a computed specifier is (`app/<path>` or `index.html's inline script <k>`), one entry a call: the walk follows none. */
+  computed: string[];
+}
+
+/**
+ * The files a first load of index.html fetches, in the order the walk reaches them (the header's Load block says the
  * order), each once, with every first-load reference that names no file of app/; then the files the dynamic import()
  * calls of the page's scripts and of every module reached fetch later (each literal specifier walked depth first: the
  * module, its static imports, then its own import() calls), none counted twice. `textOf` reads a file's text by path
