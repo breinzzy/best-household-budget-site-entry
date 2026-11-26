@@ -1,42 +1,45 @@
-// Hearth — a working household budget site (Node 22, standard library only):
-// the site is this directory's app/ folder, plain static files a browser opens
-// at app/index.html (ES modules, CSS, no build step, no network request), its
-// content held in its own files: data.js seeds the Alvarez family's real
-// November 2026 figures, charts.js draws the SVG donut and bars, views.js
-// renders the seven pages, main.js owns state, routing and every control.
-// The program hands it in: it copies app/ and screenshots/ from beside this
-// file to /output and writes /output/dossier.json, the summary the judge reads
-// (your screenshots, the first load's files and bytes, and your source), with
-// the vendored make.fun library. Leave vendor/makefun-frontend.ts as it is:
-// the scorer requires dossier.json to be byte for byte what its own copy writes.
+// Hearth — the hand-in program for the Alvarez family budget site.
+// Node 22, standard library only. The site itself is plain static files
+// under app/ (ES modules, CSS, no build step, nothing loaded over the
+// network), with its screenshots under screenshots/. This program copies
+// both into the output directory and writes dossier.json there with the
+// vendored make.fun library — the summary the judge reads (screenshots,
+// first-load files and bytes, and the site's source). Leave
+// vendor/makefun-frontend.ts untouched: the scorer rebuilds the dossier
+// with its own copy and requires a byte-for-byte match.
 //
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
+// Run it locally with:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildDossier } from './vendor/makefun-frontend.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-// Screenshots (screenshots/, first by name is the cover — the judge's contact
-// sheet shows it large on top): 1-dashboard.jpg the whole budget at a glance
-// (KPIs, spending donut, budget bars, recent spending, upcoming bills),
-// 2-budgets.jpg every category against its limit, 3-transactions.jpg the
-// add-transaction form and the full ledger, 4-dashboard-phone.jpg the same
-// dashboard at 390 x 844. All four are real renders of app/ in headless Chrome.
 mkdirSync(out, { recursive: true });
 cpSync(join(here, 'app'), join(out, 'app'), { recursive: true });
 mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+if (existsSync(join(here, 'screenshots'))) {
+  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+}
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files and directories in app/ or
-// 16 MiB of app files: app/ counts beside /output's own 1000-entry cap, its screenshots/ and dossier.json).
+// The scorer's own caps: only text_max_bytes shapes the dossier's bytes;
+// the others refuse an entry the scorer would refuse anyway (more than 4
+// screenshots or one over 256 KiB; more than 993 files and directories in
+// app/ or 16 MiB of app files — app/ counts beside /output's own cap of
+// 1,000 entries, which its screenshots/ and dossier.json share).
+import { writeFileSync } from 'node:fs';
+import { buildDossier } from './vendor/makefun-frontend.ts';
+
 writeFileSync(
   join(out, 'dossier.json'),
-  buildDossier(out, { text_max_bytes: 163840, screenshots: { max: 4, max_bytes: 262144 }, app_max_files: 993, app_max_bytes: 16777216 }),
+  buildDossier(out, {
+    text_max_bytes: 163840,
+    screenshots: { max: 4, max_bytes: 262144 },
+    app_max_files: 993,
+    app_max_bytes: 16777216,
+  }),
 );
