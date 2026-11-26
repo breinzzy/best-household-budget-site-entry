@@ -1,153 +1,295 @@
-// Hearth main — one job: state, routing and wiring the controls.
-// State lives in localStorage (seeded from data.js); every action saves and
-// re-renders, so the dashboard, budgets, goals, bills and reports always agree.
-import { FAMILY, MONTHS, MONTH_ORDER, BILLS, GOALS, BUDGET_LIMITS } from './data.js';
-import { dashboardView, transactionsView, budgetsView, goalsView, billsView, reportsView, plannerView } from './views.js';
-import { money } from './charts.js';
+// Hearth — state, hash routing and every control on the site.
+// The seed comes from data.js; the family's edits live in localStorage
+// under hearth-state-v1, and every action saves and re-renders, so all
+// seven pages always agree with each other.
+import { SEED } from './data.js';
+import {
+  viewDashboard,
+  viewTransactions,
+  viewBudgets,
+  viewGoals,
+  viewBills,
+  viewReports,
+  viewPlanner,
+} from './views.js';
 
 const KEY = 'hearth-state-v1';
-const ROUTES = {
-  '/': dashboardView, '/transactions': transactionsView, '/budgets': budgetsView,
-  '/goals': goalsView, '/bills': billsView, '/reports': reportsView, '/planner': plannerView,
-};
-const NAV = [
-  ['/', 'Dashboard'], ['/transactions', 'Transactions'], ['/budgets', 'Budgets'],
-  ['/goals', 'Goals'], ['/bills', 'Bills'], ['/reports', 'Reports'], ['/planner', 'Planner'],
-];
 
-function seed() {
-  const txns = {};
-  for (const m of MONTH_ORDER) txns[m] = MONTHS[m].txns.map((x) => ({ ...x }));
+const ROUTES = {
+  '': { fn: viewDashboard, title: 'Dashboard' },
+  transactions: { fn: viewTransactions, title: 'Transactions' },
+  budgets: { fn: viewBudgets, title: 'Budgets' },
+  goals: { fn: viewGoals, title: 'Savings goals' },
+  bills: { fn: viewBills, title: 'Bills' },
+  reports: { fn: viewReports, title: 'Reports' },
+  planner: { fn: viewPlanner, title: 'Budget planner' },
+};
+
+function freshState() {
   return {
-    month: '2026-11', txns,
-    bills: BILLS.map((b) => ({ ...b })),
-    goals: GOALS.map((g) => ({ ...g })),
-    limits: { ...BUDGET_LIMITS },
-    planner: { income: 7240, needs: 50, wants: 30 },
-    filter: { cat: 'all', q: '' },
+    month: '2026-11',
+    months: JSON.parse(JSON.stringify(SEED.months)),
+    limits: Object.fromEntries(SEED.categories.map((c) => [c.id, c.limit])),
+    bills: JSON.parse(JSON.stringify(SEED.bills)),
+    goals: JSON.parse(JSON.stringify(SEED.goals)),
+    planner: { pay: 7240, needs: 50, wants: 30 },
   };
 }
 
-function load() {
+function loadState() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return seed();
-    const s = JSON.parse(raw);
-    if (!s.txns || !s.txns['2026-11']) return seed();
-    return { ...seed(), ...s, filter: { cat: 'all', q: '' } };
-  } catch { return seed(); }
-}
-
-let state = load();
-function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* private mode */ } }
-function monthLabel() { return MONTHS[state.month].label; }
-function viewState() {
-  return { ...state, monthLabel: monthLabel(), daysLeft: MONTHS[state.month].daysLeft };
-}
-
-let flash = '';
-function render() {
-  const hash = location.hash || '#/';
-  const path = hash.slice(1).split('?')[0] || '/';
-  const view = ROUTES[path] || dashboardView;
-  const active = ROUTES[path] ? path : '/';
-  const dueCount = state.bills.filter((b) => !b.paid).length;
-  document.querySelector('#nav').innerHTML = NAV.map(([p, label]) =>
-    `<a href="#${p}" class="${p === active ? 'active' : ''}">${label}${p === '/bills' ? ` <span class="n-badge">${dueCount} due</span>` : ''}</a>`).join('');
-  document.querySelector('#view').innerHTML = (flash ? `<div class="flash">${flash}</div>` : '') + view(viewState());
-  flash = '';
-  document.title = `Hearth — ${FAMILY.name} · ${NAV.find(([p]) => p === active)?.[1] || 'Dashboard'}`;
-}
-
-function rerender(msg) { if (msg) flash = msg; save(); render(); }
-
-document.addEventListener('click', (e) => {
-  const el = e.target.closest('[data-action]');
-  if (!el) return;
-  const a = el.dataset.action;
-  if (a === 'month') { state.month = el.dataset.month; rerender(); }
-  if (a === 'delete-txn') {
-    const id = el.dataset.id;
-    state.txns[state.month] = state.txns[state.month].filter((x) => x.id !== id);
-    rerender('Transaction deleted — totals updated everywhere.');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.months && parsed.months['2026-11'] && parsed.months['2026-10']) return parsed;
+    }
+  } catch (err) {
+    // A damaged saved copy falls back to the seed rather than a blank page.
   }
-  if (a === 'adjust-budget') {
-    const cat = el.dataset.cat;
-    const cur = state.limits[cat];
-    const next = window.prompt(`Monthly limit for this category (current $${cur}):`, String(cur));
-    if (next !== null) {
-      const v = Math.max(0, Math.round(Number(next) || 0));
-      if (v > 0) { state.limits[cat] = v; rerender(`Budget updated to $${v.toLocaleString('en-US')} a month.`); }
+  return freshState();
+}
+
+let state = loadState();
+
+// Search and filter are session-only: they shape the ledger view, they are
+// not part of the family's saved budget.
+const ui = { search: '', filter: '' };
+let keepSearchFocus = false;
+
+function save() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(state));
+  } catch (err) {
+    // Private mode can refuse storage; the page still works for the visit.
+  }
+}
+
+function route() {
+  const hash = location.hash.replace(/^#\/?/, '').split('?')[0];
+  return ROUTES[hash] ? hash : '';
+}
+
+function render() {
+  const key = route();
+  const page = ROUTES[key];
+  const view = document.querySelector('#view');
+  view.innerHTML = page.fn(state, SEED, ui);
+  document.title = `Hearth — ${page.title} · The Alvarez Family Budget`;
+  document.querySelectorAll('.nav a').forEach((a) => {
+    const href = a.getAttribute('href');
+    a.classList.toggle('on', href === `#/${key}` || (key === '' && href === '#/'));
+    a.removeAttribute('aria-current');
+    if (a.classList.contains('on')) a.setAttribute('aria-current', 'page');
+  });
+  const badge = document.querySelector('#bills-badge');
+  if (badge) {
+    const due = state.bills.filter((b) => !b.paid).length;
+    badge.textContent = `${due} due`;
+    badge.hidden = due === 0;
+  }
+  if (keepSearchFocus) {
+    const box = document.querySelector('#txn-search');
+    if (box) {
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
     }
   }
-  if (a === 'goal-add') {
-    const g = state.goals.find((x) => x.id === el.dataset.id);
-    if (g) { g.saved += Number(el.dataset.amt); rerender(`Added $${el.dataset.amt} to “${g.name}” — now at ${money(g.saved)}.`); }
+}
+
+function catName(id) {
+  const c = SEED.categories.find((x) => x.id === id);
+  return c ? c.name : id;
+}
+
+function csvCell(v) {
+  const s = String(v ?? '');
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function downloadCsv() {
+  const rows = [...state.months[state.month].spend].sort((a, b) => (a.date < b.date ? -1 : 1));
+  const lines = [['Date', 'Merchant', 'Note', 'Category', 'Amount']];
+  for (const r of rows) lines.push([r.date, r.merchant, r.note, catName(r.category), r.amount.toFixed(2)]);
+  const blob = new Blob([lines.map((l) => l.map(csvCell).join(',')).join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `hearth-transactions-${state.month}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// The planner updates its numbers in place while a slider is dragged, so
+// the slider under the finger is never rebuilt mid-drag.
+function refreshPlannerDom() {
+  const p = state.planner;
+  const savePct = Math.max(0, 100 - p.needs - p.wants);
+  const fmt = (n) => '$' + Math.round(n).toLocaleString('en-US');
+  const needsLabel = document.querySelector('#needs-label');
+  if (needsLabel) needsLabel.textContent = `Needs — ${p.needs}% · ${fmt((p.pay * p.needs) / 100)} a month`;
+  const wantsLabel = document.querySelector('#wants-label');
+  if (wantsLabel) wantsLabel.textContent = `Wants — ${p.wants}% · ${fmt((p.pay * p.wants) / 100)} a month`;
+  const result = document.querySelector('.plan-result');
+  if (result) {
+    result.innerHTML = `<p><strong>Save — ${savePct}% · ${fmt((p.pay * savePct) / 100)} a month</strong></p>
+      <p>Needs and wants together are capped at 95%, so saving never drops below 5%.</p>
+      <p class="yearly">At this rate the household saves <b>${fmt(Math.round((p.pay * savePct) / 100) * 12)} a year</b> — ${fmt(Math.round((p.pay * savePct) / 100))} every month, on autopilot.</p>`;
   }
-  if (a === 'pay-bill') {
-    const b = state.bills.find((x) => x.id === el.dataset.id);
-    if (b) { b.paid = true; rerender(`“${b.name}” marked paid.`); }
+}
+
+function clampPlanner(changed) {
+  const p = state.planner;
+  if (p.needs + p.wants > 95) {
+    if (changed === 'needs') p.wants = 95 - p.needs;
+    else p.needs = 95 - p.wants;
   }
-  if (a === 'export-csv') {
-    const rows = [['date', 'merchant', 'category', 'kind', 'amount', 'note'],
-      ...state.txns[state.month].map((x) => [x.date, x.merchant, x.category, x.kind, x.amount.toFixed(2), x.note || ''])];
-    const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    const link = document.createElement('a');
-    link.href = url; link.download = `hearth-transactions-${state.month}.csv`; link.click();
-    URL.revokeObjectURL(url);
-    flash = 'CSV downloaded.';
+  if (p.needs < 0) p.needs = 0;
+  if (p.wants < 0) p.wants = 0;
+  if (p.needs > 95) p.needs = 95;
+  if (p.wants > 95) p.wants = 95;
+}
+
+document.addEventListener('click', (ev) => {
+  const el = ev.target.closest('[data-action]');
+  if (!el) return;
+  const action = el.dataset.action;
+
+  if (action === 'switch-month') {
+    state.month = el.dataset.month;
+    save();
     render();
   }
-  if (a === 'reset-demo') {
-    if (window.confirm('Reset everything to the original November demo data?')) {
-      const keep = state.month; state = seed(); state.month = keep; rerender('Demo data reset.');
+
+  if (action === 'delete-txn') {
+    const month = state.months[state.month];
+    month.spend = month.spend.filter((r) => r.id !== el.dataset.id);
+    save();
+    render();
+  }
+
+  if (action === 'adjust-budget') {
+    const cat = SEED.categories.find((c) => c.id === el.dataset.cat);
+    if (!cat) return;
+    const answer = window.prompt(`New monthly limit for ${cat.name}?`, String(state.limits[cat.id]));
+    if (answer === null) return;
+    const next = Math.round(Number(answer) * 100) / 100;
+    if (Number.isFinite(next) && next > 0) {
+      state.limits[cat.id] = next;
+      save();
+      render();
+    }
+  }
+
+  if (action === 'goal-add') {
+    const goal = state.goals.find((g) => g.id === el.dataset.id);
+    if (!goal) return;
+    goal.saved = Math.round((goal.saved + Number(el.dataset.amount)) * 100) / 100;
+    save();
+    render();
+  }
+
+  if (action === 'pay-bill' || action === 'unpay-bill') {
+    const bill = state.bills.find((b) => b.id === el.dataset.id);
+    if (!bill) return;
+    bill.paid = action === 'pay-bill';
+    save();
+    render();
+  }
+
+  if (action === 'export-csv') downloadCsv();
+
+  if (action === 'reset-demo') {
+    if (window.confirm('Reset everything to the demo data? Your added transactions, budget changes, goal top-ups and paid bills will be replaced.')) {
+      state = freshState();
+      ui.search = '';
+      ui.filter = '';
+      save();
+      render();
     }
   }
 });
 
-document.addEventListener('input', (e) => {
-  const el = e.target.closest('[data-input]');
-  if (!el) return;
-  const k = el.dataset.input;
-  if (k === 'search') { state.filter.q = el.value; }
-  if (k === 'cat-filter') { state.filter.cat = el.value; rerender(); return; }
-  if (k === 'plan-income') { state.planner.income = Math.max(0, Number(el.value) || 0); save(); render(); return; }
-  if (k === 'plan-needs') {
+document.addEventListener('input', (ev) => {
+  const el = ev.target;
+  if (el.id === 'txn-search') {
+    ui.search = el.value;
+    keepSearchFocus = true;
+    render();
+    return;
+  }
+  if (el.id === 'planner-pay') {
+    const v = Number(el.value);
+    if (Number.isFinite(v) && v >= 0) {
+      state.planner.pay = Math.round(v);
+      save();
+      refreshPlannerDom();
+    }
+    return;
+  }
+  if (el.id === 'planner-needs') {
     state.planner.needs = Number(el.value);
-    if (state.planner.needs + state.planner.wants > 95) state.planner.wants = 95 - state.planner.needs;
-    save(); render(); return;
+    clampPlanner('needs');
+    const other = document.querySelector('#planner-wants');
+    if (other) other.value = String(state.planner.wants);
+    save();
+    refreshPlannerDom();
+    return;
   }
-  if (k === 'plan-wants') {
+  if (el.id === 'planner-wants') {
     state.planner.wants = Number(el.value);
-    if (state.planner.needs + state.planner.wants > 95) state.planner.needs = 95 - state.planner.wants;
-    save(); render(); return;
-  }
-  if (k === 'search') {
-    // Live search without losing focus: re-render only the table body is complex,
-    // so re-render and restore focus to the search box.
-    const pos = el.selectionStart;
-    save(); render();
-    const box = document.querySelector('[data-input="search"]');
-    if (box) { box.focus(); box.setSelectionRange(pos, pos); }
+    clampPlanner('wants');
+    const other = document.querySelector('#planner-needs');
+    if (other) other.value = String(state.planner.needs);
+    save();
+    refreshPlannerDom();
   }
 });
 
-document.addEventListener('submit', (e) => {
-  const form = e.target.closest('[data-form="add-txn"]');
-  if (!form) return;
-  e.preventDefault();
-  const data = new FormData(form);
-  const amount = Number(data.get('amount'));
-  if (!amount || amount <= 0) return;
-  const merchant = String(data.get('merchant') || '').trim();
-  if (!merchant) return;
-  state.txns[state.month].push({
-    id: `user-${Date.now()}`, date: String(data.get('date') || '2026-11-26'),
-    merchant, category: String(data.get('category')), amount, note: 'Added by you', kind: 'spend',
-  });
-  rerender(`Added “${merchant}” — ${money(amount)}. Dashboard, budgets and reports updated.`);
+document.addEventListener('change', (ev) => {
+  const el = ev.target;
+  if (el.id === 'txn-filter') {
+    ui.filter = el.value;
+    render();
+  }
 });
 
-window.addEventListener('hashchange', render);
+document.addEventListener('submit', (ev) => {
+  const form = ev.target;
+  if (form.id === 'txn-form') {
+    ev.preventDefault();
+    const merchant = document.querySelector('#txn-merchant').value.trim();
+    const category = document.querySelector('#txn-category').value;
+    const amount = Math.round(Number(document.querySelector('#txn-amount').value) * 100) / 100;
+    const date = document.querySelector('#txn-date').value;
+    if (!merchant || !Number.isFinite(amount) || amount <= 0 || !date) return;
+    const key = date.slice(0, 7);
+    const row = {
+      id: `u${Date.now()}`,
+      date,
+      merchant,
+      note: 'Added by the family',
+      category,
+      amount,
+    };
+    if (state.months[key]) {
+      state.months[key].spend.push(row);
+      state.month = key;
+    } else {
+      state.months[state.month].spend.push(row);
+    }
+    save();
+    render();
+    const note = document.querySelector('.txn-form .hint');
+    if (note) note.textContent = `${merchant} — $${amount.toFixed(2)} added. Dashboard, budgets and reports already include it.`;
+  }
+  if (form.id === 'planner-form') ev.preventDefault();
+});
+
+window.addEventListener('hashchange', () => {
+  keepSearchFocus = false;
+  render();
+});
+
 render();
