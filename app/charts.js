@@ -1,74 +1,135 @@
-// Hearth — money formatting and the two SVG charts (donut + bars).
-// Both charts are plain SVG strings, no library, no network.
+// Canvas charts for Hearth: a spending donut, grouped monthly bars and a small
+// trend strip. No library — plain 2D canvas, drawn after each render, scaled for
+// the screen's pixel density so the lines stay crisp.
 
-export function money(n) {
-  return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function setupCanvas(canvas, width, height) {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  return ctx;
 }
 
-export function money0(n) {
-  return '$' + Math.round(Number(n)).toLocaleString('en-US');
-}
-
-function esc(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// A donut from slices of { label, value, color }. The hole carries the
-// total and a caption, so the chart reads even without its legend.
-export function donut(parts, size, total, label) {
-  const r = size / 2;
-  const hole = r * 0.62;
-  const cx = r;
-  const cy = r;
-  const sum = parts.reduce((a, p) => a + p.value, 0) || 1;
-  let angle = -90;
-  const arcs = parts.map((p) => {
-    const frac = p.value / sum;
-    const sweep = frac * 360;
-    const large = sweep > 180 ? 1 : 0;
-    const a0 = (angle * Math.PI) / 180;
-    const a1 = ((angle + sweep) * Math.PI) / 180;
-    const x0 = cx + r * Math.cos(a0);
-    const y0 = cy + r * Math.sin(a0);
-    const x1 = cx + r * Math.cos(a1);
-    const y1 = cy + r * Math.sin(a1);
+export function drawDonut(canvas, segments, centerTop, centerBottom) {
+  const size = 240;
+  const ctx = setupCanvas(canvas, size, size);
+  const cx = size / 2;
+  const cy = size / 2;
+  const outer = 104;
+  const inner = 66;
+  const total = segments.reduce((a, s) => a + s.value, 0);
+  let angle = -Math.PI / 2;
+  for (const s of segments) {
+    if (s.value <= 0) continue;
+    const sweep = (s.value / total) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, outer, angle, angle + sweep);
+    ctx.closePath();
+    ctx.fillStyle = s.color;
+    ctx.fill();
     angle += sweep;
-    if (frac >= 0.999) {
-      return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${p.color}" />`;
-    }
-    return `<path d="M ${cx} ${cy} L ${x0.toFixed(1)} ${y0.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)} Z" fill="${p.color}" />`;
-  });
-  return `<svg class="donut" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="${esc(label)}">
-    ${arcs.join('')}
-    <circle cx="${cx}" cy="${cy}" r="${hole}" fill="#ffffff" />
-    <text x="${cx}" y="${cy - 4}" text-anchor="middle" class="donut-total">${money0(total)}</text>
-    <text x="${cx}" y="${cy + 16}" text-anchor="middle" class="donut-label">${esc(label)}</text>
-  </svg>`;
+  }
+  // Punch the hole out and ring it, so the middle reads as a label, not a pie.
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.beginPath();
+  ctx.arc(cx, cy, inner, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.beginPath();
+  ctx.arc(cx, cy, inner, 0, Math.PI * 2);
+  ctx.strokeStyle = '#e7ddc8';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = '#1f2a22';
+  ctx.font = '700 26px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(centerTop, cx, cy - 12);
+  ctx.fillStyle = '#78716c';
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText(centerBottom, cx, cy + 14);
 }
 
-// A simple vertical bar chart. `rows` are { label, value, highlight }.
-export function bars(rows, height) {
-  const width = 560;
-  const max = Math.max(...rows.map((r) => r.value), 1);
-  const gap = 14;
-  const bw = (width - gap * (rows.length - 1)) / rows.length;
-  const floor = height - 26;
-  const scale = (height - 56) / max;
-  const rects = rows
-    .map((row, i) => {
-      const h = Math.max(3, Math.round(row.value * scale));
-      const x = i * (bw + gap);
-      const y = floor - h;
-      const fill = row.highlight ? '#166534' : '#a8c3a0';
-      return `<g>
-        <rect x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${h}" rx="5" fill="${fill}" />
-        <text x="${(x + bw / 2).toFixed(1)}" y="${y - 6}" text-anchor="middle" class="bar-value">${money0(row.value)}</text>
-        <text x="${(x + bw / 2).toFixed(1)}" y="${height - 8}" text-anchor="middle" class="bar-label">${esc(row.label)}</text>
-      </g>`;
-    })
-    .join('');
-  return `<svg class="bars" width="100%" viewBox="0 0 ${width} ${height}" role="img" aria-label="Monthly spending">
-    <line x1="0" y1="${floor}" x2="${width}" y2="${floor}" stroke="#e7e0d4" stroke-width="1" />
-    ${rects}
-  </svg>`;
+// Grouped bars: one group per month, one bar per category inside it, with a
+// legend of the categories that actually appear.
+export function drawGroupedBars(canvas, months, categories, values) {
+  const width = 640;
+  const height = 300;
+  const ctx = setupCanvas(canvas, width, height);
+  const padL = 46;
+  const padR = 10;
+  const padT = 14;
+  const padB = 34;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+  const max = Math.max(...values.flat()) * 1.1;
+  const groupW = plotW / months.length;
+  const barW = Math.min(16, (groupW - 14) / categories.length);
+
+  ctx.strokeStyle = '#e7ddc8';
+  ctx.fillStyle = '#78716c';
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let g = 0; g <= 4; g++) {
+    const y = padT + (plotH * g) / 4;
+    const v = Math.round((max * (4 - g)) / 4);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(width - padR, y);
+    ctx.stroke();
+    ctx.fillText(`$${v.toLocaleString('en-US')}`, padL - 8, y);
+  }
+
+  months.forEach((m, mi) => {
+    const groupX = padL + mi * groupW;
+    const innerW = categories.length * barW;
+    categories.forEach((c, ci) => {
+      const v = values[mi][ci];
+      const h = (v / max) * plotH;
+      ctx.fillStyle = c.color;
+      ctx.fillRect(groupX + (groupW - innerW) / 2 + ci * barW, padT + plotH - h, barW - 1.5, h);
+    });
+    ctx.fillStyle = '#44403c';
+    ctx.textAlign = 'center';
+    ctx.fillText(m, groupX + groupW / 2, height - 14);
+    ctx.fillStyle = '#78716c';
+    ctx.font = '700 11px system-ui, sans-serif';
+    const total = values[mi].reduce((a, b) => a + b, 0);
+    ctx.fillText(`$${total.toLocaleString('en-US')}`, groupX + groupW / 2, padT + plotH - Math.max(...values[mi]) / max * plotH - 8);
+    ctx.font = '11px system-ui, sans-serif';
+  });
+}
+
+// Small vertical bars for the dashboard's five-month strip.
+export function drawTrendBars(canvas, labels, values, highlightIndex) {
+  const width = 300;
+  const height = 120;
+  const ctx = setupCanvas(canvas, width, height);
+  const padB = 22;
+  const plotH = height - padB - 8;
+  const max = Math.max(...values) * 1.08;
+  const slot = width / values.length;
+  const barW = 34;
+  values.forEach((v, i) => {
+    const h = (v / max) * plotH;
+    const x = i * slot + (slot - barW) / 2;
+    ctx.fillStyle = i === highlightIndex ? '#b45309' : '#1d4d2b';
+    ctx.globalAlpha = i === highlightIndex ? 1 : 0.55;
+    ctx.beginPath();
+    ctx.roundRect(x, 8 + plotH - h, barW, h, 4);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#44403c';
+    ctx.font = '700 11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`$${(v / 1000).toFixed(1)}k`, i * slot + slot / 2, 8 + plotH - h - 6);
+    ctx.fillStyle = '#78716c';
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillText(labels[i], i * slot + slot / 2, height - 8);
+  });
 }

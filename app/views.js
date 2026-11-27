@@ -1,208 +1,270 @@
-// Hearth — the seven pages. Every number on every page is computed from the
-// same live state, so adding a transaction on one page moves the totals,
-// the budgets, the charts and the reports together.
-import { money, money0, donut, bars } from './charts.js';
+// Hearth's pages: every view is a function of the state, returning HTML. All
+// figures are computed from the seed data in data.js plus the household's own
+// changes (added rows, deleted rows, adjusted limits, goal top-ups, paid bills),
+// so every page always agrees with every other page.
+
+import { BILLS, CATEGORIES, FAMILY, GOALS, MONTHS, NEXT_PAYDAY, PAID_BILLS, SAVINGS_PLAN, TREND } from './data.js';
 
 export function esc(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
-function round2(n) {
+export function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
-// --- shared math -----------------------------------------------------------
+export function money(n) {
+  return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
-export function totalsFor(state, seed, key) {
-  const meta = seed.months[key];
-  const month = state.months[key];
+export function money0(n) {
+  return '$' + Math.round(Number(n)).toLocaleString('en-US');
+}
+
+export function catById(id) {
+  return CATEGORIES.find((c) => c.id === id) || { id, name: id, color: '#78716c', limit: 0 };
+}
+
+export function catName(id) {
+  return catById(id).name;
+}
+
+// --- Derived figures -------------------------------------------------------
+
+export function rowsFor(state, monthKey) {
+  const month = MONTHS[monthKey];
+  const rows = [...month.spend];
+  for (const r of state.added) if (r.month === monthKey) rows.push(r);
+  return rows.filter((r) => !state.deleted.includes(r.id));
+}
+
+export function totalsFor(state, monthKey) {
+  const month = MONTHS[monthKey];
+  const rows = rowsFor(state, monthKey);
+  const spent = round2(rows.reduce((a, r) => a + r.amount, 0));
   const income = round2(month.income.reduce((a, r) => a + r.amount, 0));
-  const spent = round2(month.spend.reduce((a, r) => a + r.amount, 0));
-  const saved = seed.savingsPlan;
+  const saved = SAVINGS_PLAN;
   const left = round2(income - spent - saved);
-  return { ...meta, income, spent, saved, left, key };
+  const byCat = {};
+  for (const c of CATEGORIES) byCat[c.id] = 0;
+  for (const r of rows) byCat[r.category] = round2((byCat[r.category] || 0) + r.amount);
+  const plan = CATEGORIES.reduce((a, c) => a + (state.limits[c.id] ?? c.limit), 0);
+  return { income, spent, saved, left, byCat, plan, label: month.label, rows: rows.length };
 }
 
-export function categorySpent(state, key) {
-  const out = {};
-  for (const row of state.months[key].spend) {
-    out[row.category] = round2((out[row.category] || 0) + row.amount);
-  }
-  return out;
-}
-
-export function budgetRows(state, seed, key) {
-  const spent = categorySpent(state, key);
-  return seed.categories.map((c) => {
-    const used = spent[c.id] || 0;
-    const limit = state.limits[c.id];
-    const pct = limit ? (used / limit) * 100 : 0;
-    return { ...c, used, limit, pct, diff: round2(limit - used) };
+export function budgetRows(state, monthKey) {
+  const t = totalsFor(state, monthKey);
+  return CATEGORIES.map((c) => {
+    const limit = state.limits[c.id] ?? c.limit;
+    const spent = t.byCat[c.id] || 0;
+    return { cat: c, spent, limit, pct: limit ? (spent / limit) * 100 : 0, left: round2(limit - spent) };
   });
 }
 
-// Newest first; same-day rows keep their entered order, latest entered first.
-export function txnRows(state, key) {
-  return state.months[key].spend
-    .map((r, i) => ({ ...r, _i: i }))
-    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b._i - a._i));
+export function goalSaved(state, goal) {
+  return state.goals[goal.id] ?? goal.saved;
 }
 
-function catName(seed, id) {
-  const c = seed.categories.find((x) => x.id === id);
-  return c ? c.name : id;
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// Projected finish: months from December 2026 at the goal's monthly rate.
+// The goal is done during the month its last contribution lands, so a goal
+// needing 4 monthly contributions from December finishes in March.
+export function finishLabel(goal, saved) {
+  const left = goal.target - saved;
+  if (left <= 0) return 'Done — fully funded';
+  const months = Math.ceil(left / goal.monthly);
+  const d = new Date(2026, 11 + months - 1, 1); // Dec 2026 + months - 1
+  return `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-function catColor(seed, id) {
-  const c = seed.categories.find((x) => x.id === id);
-  return c ? c.color : '#78716c';
+export function weekSpend(state) {
+  const month = MONTHS[state.month];
+  const rows = rowsFor(state, state.month).filter((r) => {
+    const day = Number(r.date.slice(8, 10));
+    return day > month.daysElapsed - 7;
+  });
+  const total = round2(rows.reduce((a, r) => a + r.amount, 0));
+  const biggest = rows.reduce((best, r) => (r.amount > (best?.amount ?? 0) ? r : best), null);
+  return { total, biggest, count: rows.length };
 }
 
-function monthSwitcher(state, seed) {
-  return `<div class="switcher" role="group" aria-label="Choose month">
-    ${Object.keys(seed.months)
-      .map(
-        (k) =>
-          `<button type="button" data-action="switch-month" data-month="${k}" class="${state.month === k ? 'on' : ''}">${esc(seed.months[k].label)}</button>`,
-      )
-      .join('')}
-  </div>`;
+// The three "worth knowing" insights, each computed from the live figures.
+export function insightsFor(state) {
+  const t = totalsFor(state, state.month);
+  const rows = budgetRows(state, state.month);
+  const out = [];
+  const over = rows.filter((r) => r.left < 0).sort((a, b) => a.left - b.left);
+  if (over.length) {
+    const worst = over[0];
+    const donor = [...rows].filter((r) => r.left > 0).sort((a, b) => b.left - a.left)[0];
+    out.push({
+      title: `${worst.cat.name} ran over`,
+      text: `${worst.cat.name} is ${money(Math.abs(worst.left))} over its ${money0(worst.limit)} limit. ${donor.cat.name} still has ${money(donor.left)} left, so the month balances — no money needs to move.`,
+    });
+  }
+  const g = rows.find((r) => r.cat.id === 'groceries');
+  if (g && MONTHS[state.month].daysLeft > 0) {
+    const perDay = g.left / MONTHS[state.month].daysLeft;
+    out.push({
+      title: 'Groceries, nearly done',
+      text: `Groceries is ${Math.round(g.pct)}% used with ${MONTHS[state.month].daysLeft} days left — about ${money(perDay)} a day for the rest of the month. A small top-up shop fits; a big one doesn't.`,
+    });
+  }
+  const kept = TREND.map((m) => {
+    const income = 7240;
+    const left = income - m.total - SAVINGS_PLAN;
+    return { month: m.month, rate: ((SAVINGS_PLAN + left) / income) * 100 };
+  });
+  const now = kept[kept.length - 1];
+  const best = [...kept].sort((a, b) => b.rate - a.rate)[0];
+  out.push({
+    title: 'Kept rate slipped',
+    text: `November kept ${now.rate.toFixed(1)}% of take-home pay — the lowest of the last five months, after ${best.month}'s ${best.rate.toFixed(1)}%. Dining over and a ${money0(t.byCat.shopping)} shopping month pushed it down.`,
+  });
+  return out;
+}
+
+export function upcomingBills(state, n = 3) {
+  return BILLS.filter((b) => !state.paid.includes(b.id)).slice(0, n);
+}
+
+// --- Shared bits -----------------------------------------------------------
+
+export function monthSwitcher(state) {
+  return `<div class="month-switch" role="group" aria-label="Month">${Object.entries(MONTHS)
+    .map(
+      ([k, m]) =>
+        `<button type="button" data-action="switch-month" data-month="${k}" class="${state.month === k ? 'on' : ''}">${esc(m.label)}</button>`,
+    )
+    .join('')}</div>`;
 }
 
 function bar(pct, color) {
-  const w = Math.min(100, Math.max(0, pct));
-  return `<div class="bar"><span style="width:${w.toFixed(1)}%;background:${color}"></span></div>`;
+  const p = Math.max(0, Math.min(100, pct));
+  return `<div class="bar" role="img" aria-label="${Math.round(p)} percent"><span style="width:${p}%;background:${color}"></span></div>`;
 }
 
-function tipCard(tip) {
-  return `<div class="tip tip-${tip.tone}">
-    <strong>${esc(tip.title)}</strong>
-    <p>${esc(tip.body)}</p>
-  </div>`;
+function kpi(label, value, sub) {
+  return `<div class="kpi"><p>${esc(label)}</p><b>${value}</b><span>${esc(sub)}</span></div>`;
 }
 
 // --- Dashboard -------------------------------------------------------------
 
-export function viewDashboard(state, seed) {
-  const t = totalsFor(state, seed, state.month);
-  const rows = budgetRows(state, seed, state.month);
-  const spentByCat = categorySpent(state, state.month);
-  const avgDay = Math.round(t.spent / t.daysElapsed);
-  const savedPct = ((t.saved / t.income) * 100).toFixed(1);
-  const over = rows.filter((r) => r.pct > 100).sort((a, b) => b.pct - a.pct)[0];
-  const leftNote = over
-    ? `${over.name} ${money0(Math.abs(over.diff))} over — see budgets`
-    : 'All budgets on track';
-
-  const top = [...rows].sort((a, b) => b.used - a.used);
-  const top5 = top.slice(0, 5);
-  const rest = round2(t.spent - top5.reduce((a, r) => a + r.used, 0));
-  const donutParts = top5.map((r) => ({ label: r.name, value: r.used, color: r.color }));
-  if (rest > 0) donutParts.push({ label: 'Everything else', value: rest, color: '#d6d3d1' });
-
-  const glance = [...rows].sort((a, b) => b.pct - a.pct).slice(0, 5);
-  const recent = txnRows(state, state.month).slice(0, 6);
-  const due = state.bills.filter((b) => !b.paid).slice(0, 4);
-  const accountsTotal = seed.accounts.reduce((a, x) => a + x.balance, 0);
+export function viewDashboard(state) {
+  const t = totalsFor(state, state.month);
+  const month = MONTHS[state.month];
+  // The dashboard shows whole dollars, rounded down, and the "left" figure is
+  // computed from the rounded spent figure — so income, spent, saved and left
+  // always add up on screen. Exact cents live on the Budgets page.
+  const spentWhole = Math.floor(t.spent);
+  const leftWhole = t.income - spentWhole - t.saved;
+  const week = weekSpend(state);
+  const budgets = budgetRows(state, state.month).sort((a, b) => b.pct - a.pct).slice(0, 5);
+  const insights = insightsFor(state);
+  const bills = upcomingBills(state, 3);
+  const byCat = CATEGORIES.map((c) => ({ ...c, value: t.byCat[c.id] || 0 })).filter((c) => c.value > 0);
+  const legend = byCat
+    .sort((a, b) => b.value - a.value)
+    .map((c) => `<li><i style="background:${c.color}"></i>${esc(c.name)}<b>${money0(c.value)}</b></li>`)
+    .join('');
 
   return `
   <header class="page-head">
     <div>
       <h1>Good evening, Alvarez family</h1>
-      <p class="lede">${esc(t.label)} · ${t.daysLeft} days left in the month · All figures update live as you add spending.</p>
+      <p class="lede">${esc(month.label)} · ${month.daysLeft} days left in the month · All figures update live as you add spending.</p>
     </div>
-    ${monthSwitcher(state, seed)}
+    ${monthSwitcher(state)}
   </header>
 
   <section class="kpis" aria-label="Month at a glance">
-    <article class="kpi"><span class="kpi-label">Income</span><strong>${money0(t.income)}</strong><span class="kpi-sub">2 paychecks each · ${esc(t.paydays)}</span></article>
-    <article class="kpi"><span class="kpi-label">Spent so far</span><strong>${money0(t.spent)}</strong><span class="kpi-sub">${money0(avgDay)}/day avg · ${t.daysElapsed} days in</span></article>
-    <article class="kpi"><span class="kpi-label">Saved</span><strong>${money0(t.saved)}</strong><span class="kpi-sub">${savedPct}% of income · on autopilot</span></article>
-    <article class="kpi"><span class="kpi-label">Left to spend</span><strong>${money0(t.left)}</strong><span class="kpi-sub">${esc(leftNote)}</span></article>
+    ${kpi('Income', money0(t.income), `2 paychecks each · ${month.paydays}`)}
+    ${kpi('Spent so far', money0(spentWhole), `$${Math.round(spentWhole / month.daysElapsed)}/day avg · ${month.daysElapsed} days in`)}
+    ${kpi('Saved', money0(t.saved), `${((t.saved / t.income) * 100).toFixed(1)}% of income · on autopilot`)}
+    ${kpi('Left to spend', money0(leftWhole), `Dining Out ${money0(Math.abs(budgetRows(state, state.month).find((r) => r.cat.id === 'dining').left))} over — see budgets`)}
   </section>
 
-  <section class="grid-2">
-    <article class="card">
+  <section class="week-strip" aria-label="This week">
+    <div><span>This week · ${month.daysElapsed - 6}–${month.daysElapsed} ${esc(month.shortLabel)}</span><b>${money(week.total)}</b><small>across ${week.count} purchases</small></div>
+    <div><span>Biggest this week</span><b>${week.biggest ? esc(week.biggest.merchant) : '—'}</b><small>${week.biggest ? money(week.biggest.amount) + ' · ' + esc(week.biggest.note) : ''}</small></div>
+    <div><span>Next payday</span><b>${esc(NEXT_PAYDAY.label)}</b><small>${NEXT_PAYDAY.daysAway} days away · $7,240 lands</small></div>
+  </section>
+
+  <div class="duo">
+    <section class="card">
       <h2>Where the money went</h2>
-      <div class="donut-wrap">
-        ${donut(donutParts, 190, t.spent, 'spent')}
-        <ul class="legend">
-          ${donutParts.map((p) => `<li><span class="dot" style="background:${p.color}"></span>${esc(p.label)} <b>${money0(p.value)}</b></li>`).join('')}
-        </ul>
-      </div>
-    </article>
-
-    <article class="card">
+      <div class="donut-wrap"><canvas id="donut" width="240" height="240" aria-label="Spending by category"></canvas>
+      <ul class="legend">${legend}</ul></div>
+    </section>
+    <section class="card">
       <h2>Budgets at a glance</h2>
-      <ul class="glance">
-        ${glance
-          .map(
-            (r) => `<li>
-              <div class="glance-top"><span>${esc(r.name)}</span><span>${money0(r.used)} / ${money0(r.limit)}</span></div>
-              ${bar(r.pct, r.color)}
-              <div class="glance-bot"><span>${Math.round(r.pct)}% used</span><span class="${r.pct > 100 ? 'over' : 'left'}">${r.pct > 100 ? money0(Math.abs(r.diff)) + ' over' : money0(r.diff) + ' left'}</span></div>
-            </li>`,
-          )
-          .join('')}
-      </ul>
+      ${budgets
+        .map(
+          (r) => `<div class="mini-budget">
+          <div class="mini-head"><span>${esc(r.cat.name)}</span><b>${money0(r.spent)} / ${money0(r.limit)}</b></div>
+          ${bar(r.pct, r.left < 0 ? '#b45309' : r.cat.color)}
+          <div class="mini-foot"><span>${Math.round(r.pct)}% used</span><b class="${r.left < 0 ? 'over' : 'ok'}">${r.left < 0 ? money0(Math.abs(r.left)) + ' over' : money0(r.left) + ' left'}</b></div>
+        </div>`,
+        )
+        .join('')}
       <p class="card-link"><a href="#/budgets">See all budgets →</a></p>
-    </article>
-  </section>
+    </section>
+  </div>
 
-  <section class="grid-2">
-    <article class="card">
-      <h2>Recent spending</h2>
-      <ul class="txn-list">
-        ${recent
+  <div class="duo">
+    <section class="card">
+      <h2>Worth knowing</h2>
+      <ul class="insights">
+        ${insights.map((i) => `<li><b>${esc(i.title)}</b><span>${esc(i.text)}</span></li>`).join('')}
+      </ul>
+    </section>
+    <section class="card">
+      <h2>Coming up</h2>
+      <ul class="bill-mini">
+        ${bills
           .map(
-            (r) => `<li>
-              <span class="dot" style="background:${catColor(seed, r.category)}"></span>
-              <span class="txn-main"><b>${esc(r.merchant)}</b><small>${esc(r.note)} · ${esc(catName(seed, r.category))} · ${esc(r.date.slice(5))}</small></span>
-              <b>${money(r.amount)}</b>
-              <button type="button" class="mini danger" data-action="delete-txn" data-id="${esc(r.id)}" aria-label="Delete ${esc(r.merchant)}">Delete</button>
-            </li>`,
+            (b) => `<li><span><b>${esc(b.name)}</b><small>${esc(b.what)} · due ${esc(b.due)}</small></span><b>${money(b.amount)}</b></li>`,
           )
           .join('')}
       </ul>
-      <p class="card-link"><a href="#/transactions">All transactions →</a></p>
-    </article>
-
-    <article class="card">
-      <h2>Coming up</h2>
-      <ul class="bills-mini">
-        ${due.map((b) => `<li><span>${esc(b.name)}</span><b>${money(b.amount)}</b><small>due ${esc(b.due)}</small></li>`).join('')}
-      </ul>
-      <p class="accounts-line">Across the accounts: <b>${money(accountsTotal)}</b> — ${seed.accounts.map((a) => `${esc(a.name)} ${money(a.balance)}`).join(' · ')}</p>
-      ${tipCard(seed.tips[0])}
-    </article>
-  </section>`;
+      <p class="card-link"><a href="#/bills">All December bills →</a></p>
+      <h2 class="sub">Five months of spending</h2>
+      <canvas id="trend-bars" width="300" height="120" aria-label="Monthly spending, July to November"></canvas>
+    </section>
+  </div>`;
 }
 
 // --- Transactions ----------------------------------------------------------
 
-export function viewTransactions(state, seed, ui) {
-  const rows = txnRows(state, state.month);
-  const q = (ui.search || '').toLowerCase();
-  const shown = rows.filter((r) => {
-    if (ui.filter && r.category !== ui.filter) return false;
-    if (!q) return true;
-    return (r.merchant + ' ' + r.note + ' ' + catName(seed, r.category)).toLowerCase().includes(q);
-  });
-  const total = round2(shown.reduce((a, r) => a + r.amount, 0));
-  const t = totalsFor(state, seed, state.month);
+export function viewTransactions(state) {
+  const t = totalsFor(state, state.month);
+  const month = MONTHS[state.month];
+  const q = (state.ui.search || '').toLowerCase();
+  const rows = rowsFor(state, state.month)
+    .filter((r) => {
+      if (state.ui.filter && r.category !== state.ui.filter) return false;
+      if (!q) return true;
+      return (r.merchant + ' ' + r.note + ' ' + catName(r.category)).toLowerCase().includes(q);
+    })
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+  const shownTotal = round2(rows.reduce((a, r) => a + r.amount, 0));
 
   return `
   <header class="page-head">
     <div>
       <h1>Transactions</h1>
-      <p class="lede">Every dollar in and out, ${esc(t.label)} — ${rows.length} spending rows, ${money(total)} shown.</p>
+      <p class="lede">Every dollar in and out, ${esc(t.label)} — ${t.rows} spending rows, ${money(t.spent)} in all.</p>
     </div>
-    ${monthSwitcher(state, seed)}
+    ${monthSwitcher(state)}
   </header>
+
+  <section class="summary-strip" aria-label="Month summary">
+    <div><span>Spent</span><b>${money(t.spent)}</b></div>
+    <div><span>Income</span><b>${money(t.income)}</b></div>
+    <div><span>Auto-saved</span><b>${money(t.saved)}</b></div>
+    <div><span>Left to spend</span><b>${money(t.left)}</b></div>
+  </section>
 
   <section class="card">
     <h2>Add a transaction</h2>
@@ -210,7 +272,7 @@ export function viewTransactions(state, seed, ui) {
       <label>Merchant<input id="txn-merchant" name="merchant" type="text" required maxlength="80" placeholder="e.g. H-E-B Grocery" /></label>
       <label>Category
         <select id="txn-category" name="category">
-          ${seed.categories.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}
+          ${CATEGORIES.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}
         </select>
       </label>
       <label>Amount ($)<input id="txn-amount" name="amount" type="number" min="0.01" step="0.01" required placeholder="0.00" /></label>
@@ -222,99 +284,90 @@ export function viewTransactions(state, seed, ui) {
 
   <section class="card">
     <div class="ledger-tools">
-      <input id="txn-search" type="search" placeholder="Search merchant or note…" value="${esc(ui.search || '')}" aria-label="Search transactions" />
+      <input id="txn-search" type="search" placeholder="Search merchant or note…" value="${esc(state.ui.search || '')}" aria-label="Search transactions" />
       <select id="txn-filter" aria-label="Filter by category">
         <option value="">All categories</option>
-        ${seed.categories.map((c) => `<option value="${c.id}" ${ui.filter === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+        ${CATEGORIES.map((c) => `<option value="${c.id}" ${state.ui.filter === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
       </select>
       <button type="button" class="btn ghost" data-action="export-csv">Download CSV</button>
       <button type="button" class="btn ghost danger-text" data-action="reset-demo">Reset demo data</button>
     </div>
-    <div class="table-wrap">
-      <table class="ledger">
-        <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th class="num">Amount</th><th></th></tr></thead>
-        <tbody>
-          ${shown
-            .map(
-              (r) => `<tr>
-                <td>${esc(r.date)}</td>
-                <td><b>${esc(r.merchant)}</b><small>${esc(r.note)}</small></td>
-                <td><span class="dot" style="background:${catColor(seed, r.category)}"></span>${esc(catName(seed, r.category))}</td>
-                <td class="num">${money(r.amount)}</td>
-                <td><button type="button" class="mini danger" data-action="delete-txn" data-id="${esc(r.id)}">Delete</button></td>
-              </tr>`,
-            )
-            .join('') || '<tr><td colspan="5">Nothing matches — clear the search or the filter.</td></tr>'}
-        </tbody>
-      </table>
-    </div>
-    <p class="hint">${shown.length} rows · ${money(total)} shown · income this month ${money(t.income)} across ${state.months[state.month].income.length} paychecks.</p>
+    <p class="hint">${rows.length} rows shown · ${money(shownTotal)} in view.</p>
+    <table class="ledger">
+      <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th class="num">Amount</th><th></th></tr></thead>
+      <tbody>
+        ${rows
+          .map(
+            (r) => `<tr>
+              <td>${esc(r.date)}</td>
+              <td><b>${esc(r.merchant)}</b><small>${esc(r.note)}</small></td>
+              <td><i class="dot" style="background:${catById(r.category).color}"></i>${esc(catName(r.category))}</td>
+              <td class="num">${money(r.amount)}</td>
+              <td><button type="button" class="mini danger" data-action="delete-txn" data-id="${esc(r.id)}" aria-label="Delete ${esc(r.merchant)}">Delete</button></td>
+            </tr>`,
+          )
+          .join('')}
+      </tbody>
+    </table>
   </section>`;
 }
 
 // --- Budgets ---------------------------------------------------------------
 
-export function viewBudgets(state, seed) {
-  const rows = budgetRows(state, seed, state.month);
-  const t = totalsFor(state, seed, state.month);
-  const totalLimit = seed.categories.reduce((a, c) => a + state.limits[c.id], 0);
-  const needs = ['housing', 'groceries', 'transport', 'utilities', 'health', 'kids'];
-  const wants = ['dining', 'entertainment', 'shopping', 'personal'];
-  const needsSpent = rows.filter((r) => needs.includes(r.id)).reduce((a, r) => a + r.used, 0);
-  const wantsSpent = rows.filter((r) => wants.includes(r.id)).reduce((a, r) => a + r.used, 0);
+export function viewBudgets(state) {
+  const t = totalsFor(state, state.month);
+  const rows = budgetRows(state, state.month);
 
   return `
   <header class="page-head">
     <div>
       <h1>Budgets</h1>
-      <p class="lede">${esc(t.label)} — ${money0(t.spent)} of a ${money0(totalLimit)} plan. Tap Adjust to change any monthly limit.</p>
+      <p class="lede">${esc(t.label)} — ${money(t.spent)} of a ${money0(t.plan)} plan. Tap Adjust to change any monthly limit.</p>
     </div>
-    ${monthSwitcher(state, seed)}
+    ${monthSwitcher(state)}
   </header>
 
-  <section class="card">
-    <ul class="budget-list">
-      ${rows
-        .map(
-          (r) => `<li>
-            <div class="budget-top">
-              <span class="budget-name"><span class="dot" style="background:${r.color}"></span>${esc(r.name)}</span>
-              <span><b>${money(r.used)}</b> of ${money(r.limit)}</span>
-            </div>
-            ${bar(r.pct, r.color)}
-            <div class="budget-bot">
-              <span>${Math.round(r.pct)}% used</span>
-              <span class="pill ${r.pct > 100 ? 'over' : 'left'}">${r.pct > 100 ? money(Math.abs(r.diff)) + ' over' : money(r.diff) + ' left'}</span>
-              <button type="button" class="mini" data-action="adjust-budget" data-cat="${r.id}">Adjust</button>
-            </div>
-          </li>`,
-        )
-        .join('')}
-    </ul>
+  <section class="card budget-list">
+    ${rows
+      .map((r) => {
+        const editing = state.ui.editingBudget === r.cat.id;
+        return `<article class="budget-row">
+        <div class="budget-head">
+          <span><i class="dot" style="background:${r.cat.color}"></i><b>${esc(r.cat.name)}</b></span>
+          <b>${money(r.spent)} of ${money(r.limit)}</b>
+        </div>
+        ${bar(r.pct, r.left < 0 ? '#b45309' : r.cat.color)}
+        <div class="budget-foot">
+          <span>${Math.round(r.pct)}% used</span>
+          <b class="${r.left < 0 ? 'over' : 'ok'}">${r.left < 0 ? money(Math.abs(r.left)) + ' over' : money(r.left) + ' left'}</b>
+          ${
+            editing
+              ? `<span class="adjust-box"><input id="adjust-input" type="number" min="0" step="5" value="${r.limit}" aria-label="New limit for ${esc(r.cat.name)}" /><button type="button" class="mini" data-action="save-budget" data-cat="${r.cat.id}">Save</button><button type="button" class="mini ghost" data-action="cancel-budget">Cancel</button></span>`
+              : `<button type="button" class="mini" data-action="adjust-budget" data-cat="${r.cat.id}">Adjust</button>`
+          }
+        </div>
+      </article>`;
+      })
+      .join('')}
   </section>
-
-  <section class="card">
-    <h2>How the plan is built</h2>
-    <p>The Alvarez plan follows the 50/30/20 rule: about half the pay for needs, a third for wants, a fifth saved. This month needs are running at ${money0(needsSpent)} (${Math.round((needsSpent / t.income) * 100)}% of income) and wants at ${money0(wantsSpent)} (${Math.round((wantsSpent / t.income) * 100)}%), with ${money0(t.saved)} saved on autopilot.</p>
-    <p class="card-link"><a href="#/planner">Try the numbers in the planner →</a></p>
-  </section>`;
+  <p class="hint">Limits are monthly plans, not hard walls — going over one is fine as long as another has room. Adjusting a limit here updates the dashboard at once.</p>`;
 }
 
 // --- Goals -----------------------------------------------------------------
 
-export function viewGoals(state, seed) {
-  const totalSaved = state.goals.reduce((a, g) => a + g.saved, 0);
-  const totalTarget = state.goals.reduce((a, g) => a + g.target, 0);
+export function viewGoals(state) {
+  const goals = GOALS.map((g) => ({ ...g, saved: goalSaved(state, g) }));
+
   return `
   <header class="page-head">
     <div>
-      <h1>Savings goals</h1>
-      <p class="lede">${money0(totalSaved)} saved toward ${money0(totalTarget)} across four goals. Every dollar added here lands in the same pot the dashboard counts.</p>
+      <h1>Goals</h1>
+      <p class="lede">Three things the family is saving for. Every top-up moves the finish date — it is computed from the monthly plan, not typed in.</p>
     </div>
   </header>
 
   <section class="goals-grid">
-    ${state.goals
+    ${goals
       .map((g) => {
         const pct = Math.min(100, (g.saved / g.target) * 100);
         return `<article class="card goal">
@@ -322,6 +375,7 @@ export function viewGoals(state, seed) {
           <p class="goal-amount"><b>${money0(g.saved)}</b> of ${money0(g.target)}</p>
           ${bar(pct, '#166534')}
           <p class="goal-meta">${Math.round(pct)}% there · ${money0(g.target - g.saved)} to go</p>
+          <p class="goal-finish">Done around <b>${esc(finishLabel(g, g.saved))}</b> at ${money0(g.monthly)}/mo</p>
           <p>${esc(g.note)}</p>
           <div class="goal-add">
             ${[50, 100, 250]
@@ -332,19 +386,21 @@ export function viewGoals(state, seed) {
       })
       .join('')}
   </section>
-
-  <section class="card">
-    <h2>Why goals first</h2>
-    <p>The Alvarez family pays its future self before anything else: $600 leaves checking on each payday, before the grocery run or the movie night. That is why the emergency fund is 79% funded while the month is still running — the saving happens whether the month feels tight or not. A goal that only gets "whatever is left" never gets anything; a goal that gets paid first always does.</p>
-  </section>`;
+  <p class="hint">Top-ups come from the money left to spend — the dashboard's "left" figure falls by the same amount, so the books always balance.</p>`;
 }
 
 // --- Bills -----------------------------------------------------------------
 
-export function viewBills(state, seed) {
-  const due = state.bills.filter((b) => !b.paid);
-  const paid = state.bills.filter((b) => b.paid);
+export function viewBills(state) {
+  const due = BILLS.filter((b) => !state.paid.includes(b.id));
+  const paid = [
+    ...BILLS.filter((b) => state.paid.includes(b.id)).map((b) => ({ ...b, when: 'just now' })),
+    ...PAID_BILLS.map((b) => ({ ...b, when: `paid · due ${b.due}` })),
+  ];
   const dueTotal = round2(due.reduce((a, b) => a + b.amount, 0));
+  const autoTotal = round2(due.filter((b) => b.autopay).reduce((a, b) => a + b.amount, 0));
+  const manualTotal = round2(dueTotal - autoTotal);
+
   return `
   <header class="page-head">
     <div>
@@ -352,6 +408,12 @@ export function viewBills(state, seed) {
       <p class="lede">${due.length} bills due in December, ${money(dueTotal)} to go. Autopay handles most of them; two need a tap.</p>
     </div>
   </header>
+
+  <section class="payday-card" aria-label="Next payday">
+    <div><span>Next payday</span><b>${esc(NEXT_PAYDAY.label)}</b><small>${NEXT_PAYDAY.daysAway} days away · $7,240 lands</small></div>
+    <div><span>Autopay will cover</span><b>${money(autoTotal)}</b><small>${due.filter((b) => b.autopay).length} bills, no tap needed</small></div>
+    <div><span>Needs a tap</span><b>${money(manualTotal)}</b><small>${due.filter((b) => !b.autopay).length} bills · pay before Dec 20</small></div>
+  </section>
 
   <section class="card">
     <h2>Due in December</h2>
@@ -369,121 +431,146 @@ export function viewBills(state, seed) {
     </ul>
   </section>
 
-  ${paid.length ? `<section class="card">
+  <section class="card">
     <h2>Paid</h2>
     <ul class="bill-list paid">
-      ${paid.map((b) => `<li><span class="bill-name"><b>${esc(b.name)}</b><small>paid · due ${esc(b.due)}</small></span><b>${money(b.amount)}</b><button type="button" class="mini" data-action="unpay-bill" data-id="${b.id}">Undo</button></li>`).join('')}
+      ${paid
+        .map(
+          (b) => `<li><span class="bill-name"><b>${esc(b.name)}</b><small>${esc(b.when)}</small></span><b>${money(b.amount)}</b>${state.paid.includes(b.id) ? `<button type="button" class="mini" data-action="unpay-bill" data-id="${b.id}">Undo</button>` : ''}</li>`,
+        )
+        .join('')}
     </ul>
-  </section>` : ''}
-
-  <section class="card">
-    <h2>Recurring, every month</h2>
-    <p>Rent, power, water, internet, phones, insurance and the gym leave on fixed dates, most of them on autopay, so the family never has to remember them. The small ones count too: Spotify $11.99 and Netflix $15.49 renew from December inside Entertainment, and the gym's $29 keeps the Castle Hill membership warm. A bill is only a surprise the first time — after that it is a line in the plan.</p>
   </section>`;
 }
 
 // --- Reports ---------------------------------------------------------------
 
-export function viewReports(state, seed) {
-  const t = totalsFor(state, seed, state.month);
-  const rows = budgetRows(state, seed, state.month);
-  const ranked = [...rows].sort((a, b) => b.used - a.used);
-  const needsIds = ['housing', 'groceries', 'transport', 'utilities', 'health', 'kids'];
-  const wantsIds = ['dining', 'entertainment', 'shopping', 'personal'];
-  const needs = round2(rows.filter((r) => needsIds.includes(r.id)).reduce((a, r) => a + r.used, 0));
-  const wants = round2(rows.filter((r) => wantsIds.includes(r.id)).reduce((a, r) => a + r.used, 0));
-  const pct = (n) => ((n / t.income) * 100).toFixed(1);
-  const trendRows = seed.trend.map((m) => ({ label: m.label, value: m.total, highlight: m.label === 'Nov' }));
+export function viewReports(state) {
+  const spent5 = TREND.reduce((a, m) => a + m.total, 0);
+  const avg = spent5 / TREND.length;
+  const biggest = [...TREND].sort((a, b) => b.total - a.total)[0];
+  const lightest = [...TREND].sort((a, b) => a.total - b.total)[0];
+  const kept = TREND.map((m) => {
+    const left = 7240 - m.total - SAVINGS_PLAN;
+    return { month: m.month, rate: ((SAVINGS_PLAN + left) / 7240) * 100 };
+  });
+  const bestKept = [...kept].sort((a, b) => b.rate - a.rate)[0];
+  const worstKept = [...kept].sort((a, b) => a.rate - b.rate)[0];
 
   return `
   <header class="page-head">
     <div>
       <h1>Reports</h1>
-      <p class="lede">Five months of spending, the 50/30/20 check, and what the numbers are saying — all for ${esc(t.label)}.</p>
+      <p class="lede">Five months, July to November 2026 — what the family spent, where it went, and how much of each paycheck they kept.</p>
     </div>
-    ${monthSwitcher(state, seed)}
   </header>
 
-  <section class="card">
-    <h2>Spending over five months</h2>
-    ${bars(trendRows, 220)}
-    <p class="hint">October was the lightest month of the five at ${money0(3491)} — rent stayed flat while groceries and dining both dipped. November is back near the five-month norm.</p>
+  <section class="kpis" aria-label="Five-month summary">
+    ${kpi('Spent · 5 months', money0(spent5), `Average ${money0(avg)} a month`)}
+    ${kpi('Biggest month', money0(biggest.total), `${esc(biggest.month)} — the most spent`)}
+    ${kpi('Lightest month', money0(lightest.total), `${esc(lightest.month)} — the least spent`)}
+    ${kpi('Auto-saved · 5 months', money0(SAVINGS_PLAN * 5), `$${SAVINGS_PLAN.toLocaleString('en-US')} every month, no exceptions`)}
   </section>
 
-  <section class="grid-2">
-    <article class="card">
-      <h2>The 50/30/20 check</h2>
-      <p>Measured against ${money0(t.income)} of income this month.</p>
-      <ul class="split">
-        <li><span>Needs — housing, groceries, transport, utilities, health, kids</span><b>${money(needs)} · ${pct(needs)}%</b><small>target 50% — ${needs / t.income > 0.5 ? 'a touch over' : 'inside the line'}</small></li>
-        <li><span>Wants — dining out, entertainment, shopping, personal</span><b>${money(wants)} · ${pct(wants)}%</b><small>target 30% — well under, the month stayed home</small></li>
-        <li><span>Saved — the two payday transfers</span><b>${money(t.saved)} · ${pct(t.saved)}%</b><small>target 20% — close, and above the family's 15% floor</small></li>
+  <section class="card">
+    <h2>Spending by category, month by month</h2>
+    <canvas id="grouped-bars" width="640" height="300" aria-label="Spending by category for each of five months"></canvas>
+    <ul class="legend inline">
+      ${CATEGORIES.map((c) => `<li><i style="background:${c.color}"></i>${esc(c.name)}</li>`).join('')}
+    </ul>
+    <p class="hint">Housing is the flat green bar every month — rent never moves. Everything else is where the months differ.</p>
+  </section>
+
+  <div class="duo">
+    <section class="card">
+      <h2>How much of each paycheck they kept</h2>
+      <p class="lede">Saved plus left over, as a share of take-home pay.</p>
+      ${kept
+        .map(
+          (k) => `<div class="kept-row"><span>${esc(k.month)}</span>${bar(k.rate, k.rate >= 45 ? '#166534' : '#b45309')}<b>${k.rate.toFixed(1)}%</b></div>`,
+        )
+        .join('')}
+      <p class="hint">${esc(bestKept.month)} kept the most (${bestKept.rate.toFixed(1)}%). ${esc(worstKept.month)} kept the least (${worstKept.rate.toFixed(1)}%) — dining ran over and shopping spiked.</p>
+    </section>
+    <section class="card">
+      <h2>What the five months say</h2>
+      <ul class="insights">
+        <li><b>${esc(biggest.month)} was the biggest month</b><span>${money0(biggest.total)} — rent stayed flat while groceries and dining both dipped. November is back near the five-month norm.</span></li>
+        <li><b>${esc(lightest.month)} was the lightest</b><span>${money0(lightest.total)} — rent stayed flat while groceries and dining both dipped, and nothing was spent on entertainment at all.</span></li>
+        <li><b>Groceries is the swing category</b><span>From ${money0(695)} in September to ${money0(824.5)} in November — Thanksgiving week alone added ${money0(84.45)}.</span></li>
       </ul>
-      <p class="hint">${money(t.left)} is still unspent with ${t.daysLeft} days to go; it lands in savings unless the family moves it.</p>
-    </article>
-
-    <article class="card">
-      <h2>Where November went</h2>
-      <div class="donut-wrap">
-        ${donut(ranked.filter((r) => r.used > 0).map((r) => ({ label: r.name, value: r.used, color: r.color })), 190, t.spent, 'spent')}
-        <ul class="legend">
-          ${ranked.map((r) => `<li><span class="dot" style="background:${r.color}"></span>${esc(r.name)} <b>${money(r.used)}</b><small>${((r.used / t.spent) * 100).toFixed(1)}%</small></li>`).join('')}
-        </ul>
-      </div>
-    </article>
-  </section>
+    </section>
+  </div>
 
   <section class="card">
-    <h2>What the numbers say</h2>
-    <div class="tips">${seed.tips.map(tipCard).join('')}</div>
+    <h2>The ledger, month by month</h2>
+    <table class="ledger compact">
+      <thead><tr><th>Category</th>${TREND.map((m) => `<th class="num">${esc(m.month.replace(' 2026', ''))}</th>`).join('')}</tr></thead>
+      <tbody>
+        ${CATEGORIES.map(
+          (c) => `<tr><td><i class="dot" style="background:${c.color}"></i>${esc(c.name)}</td>${TREND.map((m) => `<td class="num">${money(m.byCategory[c.id])}</td>`).join('')}</tr>`,
+        ).join('')}
+        <tr class="total-row"><td><b>Total spent</b></td>${TREND.map((m) => `<td class="num"><b>${money(m.total)}</b></td>`).join('')}</tr>
+      </tbody>
+    </table>
   </section>`;
 }
 
 // --- Planner ---------------------------------------------------------------
 
-export function viewPlanner(state, seed) {
+export function viewPlanner(state) {
   const p = state.planner;
-  const savePct = Math.max(0, 100 - p.needs - p.wants);
-  const needsAmt = Math.round((p.pay * p.needs) / 100);
-  const wantsAmt = Math.round((p.pay * p.wants) / 100);
-  const saveAmt = Math.round((p.pay * savePct) / 100);
-  const yearly = saveAmt * 12;
+  const t = totalsFor(state, state.month);
+  const newSaved = SAVINGS_PLAN + p.extra;
+  const newLeft = round2(p.pay - t.spent - newSaved);
+  const newRate = ((newSaved / p.pay) * 100).toFixed(1);
+  const emergency = GOALS[0];
+  const emergencyLeft = emergency.target - goalSaved(state, emergency);
+  const finishMonths = Math.max(1, Math.ceil(emergencyLeft / (600 + p.extra)));
+  const finish = new Date(2026, 11 + finishMonths - 1, 1);
+  const freed = p.dining < 260 || p.groceries < 850 ? (260 - p.dining) + (850 - p.groceries) : 0;
 
   return `
   <header class="page-head">
     <div>
-      <h1>Budget planner</h1>
-      <p class="lede">Slide the split until it fits your household, then live by it for a month and see.</p>
+      <h1>Planner</h1>
+      <p class="lede">Move the sliders and watch the month change. Nothing here is saved until you like what you see — the what-if card updates as you drag.</p>
     </div>
   </header>
 
-  <section class="card">
-    <h2>Your monthly plan</h2>
-    <form id="planner-form" class="planner-form">
-      <label>Monthly take-home pay ($)
-        <input id="planner-pay" type="number" min="0" step="1" value="${p.pay}" />
-      </label>
-      <label><span id="needs-label">Needs — ${p.needs}% · ${money0(needsAmt)} a month</span>
-        <input id="planner-needs" type="range" min="0" max="95" step="1" value="${p.needs}" />
-      </label>
-      <label><span id="wants-label">Wants — ${p.wants}% · ${money0(wantsAmt)} a month</span>
-        <input id="planner-wants" type="range" min="0" max="95" step="1" value="${p.wants}" />
-      </label>
-    </form>
-    <div class="plan-result">
-      <p><strong>Save — ${savePct}% · ${money0(saveAmt)} a month</strong></p>
-      <p>Needs and wants together are capped at 95%, so saving never drops below 5%.</p>
-      <p class="yearly">At this rate the household saves <b>${money0(yearly)} a year</b> — ${money0(saveAmt)} every month, on autopilot.</p>
-    </div>
-    <p class="hint">The Alvarez plan today: ${money0(7240)} take-home, 50% needs, 30% wants, 20% saved — ${money0(1200)} of it leaving on payday before it can be spent.</p>
-  </section>
+  <div class="duo">
+    <section class="card">
+      <h2>Your month, as it stands</h2>
+      <div class="slider-row">
+        <label for="plan-pay">Monthly take-home pay <b>${money0(p.pay)}</b></label>
+        <input id="plan-pay" type="range" min="5000" max="10000" step="20" value="${p.pay}" data-plan="pay" />
+      </div>
+      <div class="slider-row">
+        <label for="plan-extra">Extra saving each month <b>${money0(p.extra)}</b></label>
+        <input id="plan-extra" type="range" min="0" max="1000" step="25" value="${p.extra}" data-plan="extra" />
+      </div>
+      <div class="slider-row">
+        <label for="plan-dining">Dining-out budget <b>${money0(p.dining)}</b></label>
+        <input id="plan-dining" type="range" min="100" max="500" step="10" value="${p.dining}" data-plan="dining" />
+      </div>
+      <div class="slider-row">
+        <label for="plan-groceries">Grocery budget <b>${money0(p.groceries)}</b></label>
+        <input id="plan-groceries" type="range" min="400" max="1200" step="10" value="${p.groceries}" data-plan="groceries" />
+      </div>
+      <p class="hint">November actually spent ${money(t.spent)} on ${money0(t.income)} of pay, saving ${money(t.saved)} — the sliders start there.</p>
+    </section>
 
-  <section class="card">
-    <h2>Make it stick</h2>
-    <ol class="rules">
-      <li><b>Pay yourself first — $1,200.</b> The transfer leaves on payday, not at month's end. What never lands in checking never gets spent.</li>
-      <li><b>One fun budget, not none.</b> Dining out and movie nights have a number of their own, so a treat never feels like a failure.</li>
-      <li><b>Review on the 1st, for ten minutes.</b> Rent is due, the month resets, and the whole plan fits on one screen — check it before the month checks you.</li>
-    </ol>
-  </section>`;
+    <section class="card accent">
+      <h2>If the month looked like this</h2>
+      <ul class="whatif">
+        <li><span>Left to spend</span><b>${money(newLeft)}</b></li>
+        <li><span>Saved each month</span><b>${money(newSaved)} · ${newRate}% of pay</b></li>
+        <li><span>Emergency fund done</span><b>${MONTH_NAMES[finish.getMonth()]} ${finish.getFullYear()} · in ${finishMonths} month${finishMonths === 1 ? '' : 's'}</b></li>
+        <li><span>Dining + groceries budgets</span><b>${money0(p.dining + p.groceries)} a month</b></li>
+      </ul>
+      <p class="hint">${freed > 0 ? `Trimming dining to ${money0(p.dining)} and groceries to ${money0(p.groceries)} frees ${money0(freed)} a month — enough to cover November's dining overspend ${Math.floor(freed / 14.55)} times over.` : 'At the current budgets the month balances exactly as November did — dining $14.55 over, covered by transport.'}</p>
+      <p><button type="button" class="btn" data-action="apply-plan">Use these budgets for December</button></p>
+      <p class="hint">That sets the dining limit to ${money0(p.dining)} and groceries to ${money0(p.groceries)} on the Budgets page.</p>
+    </section>
+  </div>`;
 }

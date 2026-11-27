@@ -1,18 +1,24 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Hearth — The Alvarez Family Budget</title>
-  <meta name="description" content="Hearth is the Alvarez family's household budget for November 2026: $7,240 in, $4,505 spent, $1,200 auto-saved. Seven working pages — dashboard, transactions, budgets, goals, bills, reports and planner — all offline, all live." />
-  <link rel="stylesheet" href="./style.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hearth — Household Budget</title>
+<meta name="description" content="Hearth is the Alvarez family's household budget: seven pages, real November figures, every control working.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.5c.8 3.2-2.4 5.1-2.4 8.2 0 1.5 1 2.6 2.4 2.6s2.4-1.1 2.4-2.6c1.9 1.3 3.1 3.4 3.1 5.6A5.5 5.5 0 0 1 12 21.8a5.5 5.5 0 0 1-5.5-5.5c0-3.9 3.6-5.6 5.5-13.8z' fill='%23f59e0b'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="main.js"></script>
 </head>
 <body>
-  <aside class="sidebar">
-    <a class="brand" href="#/">Hearth<span class="dot-amber">.</span></a>
-    <p class="family-line">The Alvarez Family<br />Austin, Texas · Daniel &amp; Priya, Maya (9), Leo (6)</p>
-    <p class="nav-label">YOUR MONEY</p>
-    <nav class="nav" aria-label="Sections">
+<div class="shell">
+  <aside class="side">
+    <a class="brand" href="#/">
+      <svg class="flame" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 2.5c.8 3.2-2.4 5.1-2.4 8.2 0 1.5 1 2.6 2.4 2.6s2.4-1.1 2.4-2.6c1.9 1.3 3.1 3.4 3.1 5.6A5.5 5.5 0 0 1 12 21.8a5.5 5.5 0 0 1-5.5-5.5c0-3.9 3.6-5.6 5.5-13.8z" fill="#f59e0b"/><path d="M12 21.8a3.2 3.2 0 0 0 3.2-3.2c0-2.1-1.6-3.2-3.2-5.4-1.6 2.2-3.2 3.3-3.2 5.4A3.2 3.2 0 0 0 12 21.8z" fill="#b45309"/></svg>
+      <span>Hearth<b>.</b></span>
+    </a>
+    <p class="family">The Alvarez Family<br>Austin, Texas · Daniel &amp; Priya, Maya (9), Leo (6)</p>
+    <nav aria-label="Your money">
+      <p>Your money</p>
       <a href="#/">Dashboard</a>
       <a href="#/transactions">Transactions</a>
       <a href="#/budgets">Budgets</a>
@@ -21,11 +27,9 @@
       <a href="#/reports">Reports</a>
       <a href="#/planner">Planner</a>
     </nav>
-    <p class="sidebar-foot">November 2026<br /><b>$1,200</b> auto-saved this month<br />Emergency fund <b>79%</b> funded</p>
+    <p class="side-foot">November 2026<br><b>$1,200</b> auto-saved this month<br>Emergency fund <b>79%</b> funded</p>
   </aside>
-  <div class="main">
-    <main id="view" class="view" aria-live="polite"></main>
-  </div>
-  <script type="module" src="./main.js"></script>
+  <main id="app"></main>
+</div>
 </body>
 </html>

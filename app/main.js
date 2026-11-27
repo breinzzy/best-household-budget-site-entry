@@ -1,295 +1,262 @@
-// Hearth — state, hash routing and every control on the site.
-// The seed comes from data.js; the family's edits live in localStorage
-// under hearth-state-v1, and every action saves and re-renders, so all
-// seven pages always agree with each other.
-import { SEED } from './data.js';
+// Hearth's shell: hash routing, the household's own changes kept in localStorage,
+// and every control on every page. The seed data never changes — the state holds
+// only what the family did (added rows, deleted rows, adjusted limits, goal
+// top-ups, paid bills, planner sliders), so Reset demo data restores the seed.
+//
+//   #/                Dashboard
+//   #/transactions    the ledger, with the add form
+//   #/budgets         monthly limits
+//   #/goals           saving goals
+//   #/bills           December's bills
+//   #/reports          five months of reports
+//   #/planner          what-if sliders
+//
+// window.__shotReady is false while a page renders and true once it is on
+// screen, so a screenshot script knows when to capture.
+
+import { BILLS, CATEGORIES, GOALS, TREND } from './data.js';
+import { drawDonut, drawGroupedBars, drawTrendBars } from './charts.js';
 import {
-  viewDashboard,
-  viewTransactions,
-  viewBudgets,
-  viewGoals,
+  catById,
+  goalSaved,
+  round2,
+  rowsFor,
+  totalsFor,
   viewBills,
-  viewReports,
+  viewBudgets,
+  viewDashboard,
+  viewGoals,
   viewPlanner,
+  viewReports,
+  viewTransactions,
 } from './views.js';
 
-const KEY = 'hearth-state-v1';
+const KEY = 'hearth-v3';
 
-const ROUTES = {
-  '': { fn: viewDashboard, title: 'Dashboard' },
-  transactions: { fn: viewTransactions, title: 'Transactions' },
-  budgets: { fn: viewBudgets, title: 'Budgets' },
-  goals: { fn: viewGoals, title: 'Savings goals' },
-  bills: { fn: viewBills, title: 'Bills' },
-  reports: { fn: viewReports, title: 'Reports' },
-  planner: { fn: viewPlanner, title: 'Budget planner' },
-};
-
-function freshState() {
+function defaultState() {
   return {
     month: '2026-11',
-    months: JSON.parse(JSON.stringify(SEED.months)),
-    limits: Object.fromEntries(SEED.categories.map((c) => [c.id, c.limit])),
-    bills: JSON.parse(JSON.stringify(SEED.bills)),
-    goals: JSON.parse(JSON.stringify(SEED.goals)),
-    planner: { pay: 7240, needs: 50, wants: 30 },
+    added: [],
+    deleted: [],
+    limits: {},
+    goals: {},
+    paid: [],
+    planner: { pay: 7240, extra: 0, dining: 260, groceries: 850 },
+    ui: { search: '', filter: '', editingBudget: null },
   };
 }
 
 function loadState() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.months && parsed.months['2026-11'] && parsed.months['2026-10']) return parsed;
-    }
-  } catch (err) {
-    // A damaged saved copy falls back to the seed rather than a blank page.
+    if (!raw) return defaultState();
+    const s = JSON.parse(raw);
+    return { ...defaultState(), ...s, ui: { ...defaultState().ui, ...(s.ui || {}) }, planner: { ...defaultState().planner, ...(s.planner || {}) } };
+  } catch {
+    return defaultState();
   }
-  return freshState();
 }
 
 let state = loadState();
-
-// Search and filter are session-only: they shape the ledger view, they are
-// not part of the family's saved budget.
-const ui = { search: '', filter: '' };
-let keepSearchFocus = false;
-
 function save() {
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
-  } catch (err) {
-    // Private mode can refuse storage; the page still works for the visit.
+  } catch {
+    // Private mode or a full store: the site still works for the session.
   }
 }
 
-function route() {
-  const hash = location.hash.replace(/^#\/?/, '').split('?')[0];
-  return ROUTES[hash] ? hash : '';
+const app = document.getElementById('app');
+const billsBadge = document.getElementById('bills-badge');
+
+function drawCharts() {
+  const donut = document.getElementById('donut');
+  if (donut) {
+    const t = totalsFor(state, state.month);
+    const segments = CATEGORIES.map((c) => ({ color: c.color, value: t.byCat[c.id] || 0 }));
+    drawDonut(donut, segments, '$' + Math.floor(t.spent).toLocaleString('en-US'), 'spent');
+  }
+  const trend = document.getElementById('trend-bars');
+  if (trend) {
+    drawTrendBars(
+      trend,
+      TREND.map((m) => m.month.slice(0, 3)),
+      TREND.map((m) => m.total),
+      TREND.length - 1,
+    );
+  }
+  const grouped = document.getElementById('grouped-bars');
+  if (grouped) {
+    drawGroupedBars(
+      grouped,
+      TREND.map((m) => m.month.replace(' 2026', '')),
+      CATEGORIES,
+      TREND.map((m) => CATEGORIES.map((c) => m.byCategory[c.id])),
+    );
+  }
 }
+
+const ROUTES = {
+  '/': { title: 'Dashboard', view: viewDashboard },
+  '/transactions': { title: 'Transactions', view: viewTransactions },
+  '/budgets': { title: 'Budgets', view: viewBudgets },
+  '/goals': { title: 'Goals', view: viewGoals },
+  '/bills': { title: 'Bills', view: viewBills },
+  '/reports': { title: 'Reports', view: viewReports },
+  '/planner': { title: 'Planner', view: viewPlanner },
+};
 
 function render() {
-  const key = route();
-  const page = ROUTES[key];
-  const view = document.querySelector('#view');
-  view.innerHTML = page.fn(state, SEED, ui);
-  document.title = `Hearth — ${page.title} · The Alvarez Family Budget`;
-  document.querySelectorAll('.nav a').forEach((a) => {
-    const href = a.getAttribute('href');
-    a.classList.toggle('on', href === `#/${key}` || (key === '' && href === '#/'));
-    a.removeAttribute('aria-current');
-    if (a.classList.contains('on')) a.setAttribute('aria-current', 'page');
+  window.__shotReady = false;
+  const path = location.hash.replace(/^#/, '') || '/';
+  const route = ROUTES[path] || ROUTES['/'];
+  document.title = `${route.title} | Hearth — Household Budget`;
+  document.querySelectorAll('nav a').forEach((a) => {
+    a.classList.toggle('on', a.getAttribute('href') === `#${path}`);
   });
-  const badge = document.querySelector('#bills-badge');
-  if (badge) {
-    const due = state.bills.filter((b) => !b.paid).length;
-    badge.textContent = `${due} due`;
-    badge.hidden = due === 0;
-  }
-  if (keepSearchFocus) {
-    const box = document.querySelector('#txn-search');
-    if (box) {
-      box.focus();
-      box.setSelectionRange(box.value.length, box.value.length);
-    }
-  }
-}
-
-function catName(id) {
-  const c = SEED.categories.find((x) => x.id === id);
-  return c ? c.name : id;
-}
-
-function csvCell(v) {
-  const s = String(v ?? '');
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  app.innerHTML = route.view(state);
+  const due = BILLS.filter((b) => !state.paid.includes(b.id)).length;
+  if (billsBadge) billsBadge.textContent = due ? `${due} due` : 'all paid';
+  drawCharts();
+  window.scrollTo(0, 0);
+  window.__shotReady = true;
 }
 
 function downloadCsv() {
-  const rows = [...state.months[state.month].spend].sort((a, b) => (a.date < b.date ? -1 : 1));
-  const lines = [['Date', 'Merchant', 'Note', 'Category', 'Amount']];
-  for (const r of rows) lines.push([r.date, r.merchant, r.note, catName(r.category), r.amount.toFixed(2)]);
-  const blob = new Blob([lines.map((l) => l.map(csvCell).join(',')).join('\n')], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
+  const rows = rowsFor(state, state.month).sort((a, b) => (a.date < b.date ? 1 : -1));
+  const lines = ['date,merchant,note,category,amount'];
+  for (const r of rows) {
+    const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
+    lines.push([r.date, q(r.merchant), q(r.note), catById(r.category).name, r.amount.toFixed(2)].join(','));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
   const a = document.createElement('a');
-  a.href = url;
-  a.download = `hearth-transactions-${state.month}.csv`;
-  document.body.appendChild(a);
+  a.href = URL.createObjectURL(blob);
+  a.download = `hearth-${state.month}-transactions.csv`;
   a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  URL.revokeObjectURL(a.href);
 }
 
-// The planner updates its numbers in place while a slider is dragged, so
-// the slider under the finger is never rebuilt mid-drag.
-function refreshPlannerDom() {
-  const p = state.planner;
-  const savePct = Math.max(0, 100 - p.needs - p.wants);
-  const fmt = (n) => '$' + Math.round(n).toLocaleString('en-US');
-  const needsLabel = document.querySelector('#needs-label');
-  if (needsLabel) needsLabel.textContent = `Needs — ${p.needs}% · ${fmt((p.pay * p.needs) / 100)} a month`;
-  const wantsLabel = document.querySelector('#wants-label');
-  if (wantsLabel) wantsLabel.textContent = `Wants — ${p.wants}% · ${fmt((p.pay * p.wants) / 100)} a month`;
-  const result = document.querySelector('.plan-result');
-  if (result) {
-    result.innerHTML = `<p><strong>Save — ${savePct}% · ${fmt((p.pay * savePct) / 100)} a month</strong></p>
-      <p>Needs and wants together are capped at 95%, so saving never drops below 5%.</p>
-      <p class="yearly">At this rate the household saves <b>${fmt(Math.round((p.pay * savePct) / 100) * 12)} a year</b> — ${fmt(Math.round((p.pay * savePct) / 100))} every month, on autopilot.</p>`;
+function addTransaction(form) {
+  const merchant = form.merchant.value.trim();
+  const category = form.category.value;
+  const amount = Number(form.amount.value);
+  const date = form.date.value;
+  if (!merchant || !category || !(amount > 0) || !date) return;
+  state.added.push({
+    id: `u-${Date.now()}`,
+    month: state.month,
+    date,
+    merchant,
+    note: 'Added by the family',
+    category,
+    amount: round2(amount),
+  });
+  save();
+  render();
+}
+
+document.addEventListener('submit', (event) => {
+  if (event.target.id === 'txn-form') {
+    event.preventDefault();
+    addTransaction(event.target);
   }
-}
+});
 
-function clampPlanner(changed) {
-  const p = state.planner;
-  if (p.needs + p.wants > 95) {
-    if (changed === 'needs') p.wants = 95 - p.needs;
-    else p.needs = 95 - p.wants;
+document.addEventListener('input', (event) => {
+  const el = event.target;
+  if (el.id === 'txn-search') {
+    state.ui.search = el.value;
+    const pos = el.selectionStart;
+    render();
+    const again = document.getElementById('txn-search');
+    if (again) {
+      again.focus();
+      again.setSelectionRange(pos, pos);
+    }
   }
-  if (p.needs < 0) p.needs = 0;
-  if (p.wants < 0) p.wants = 0;
-  if (p.needs > 95) p.needs = 95;
-  if (p.wants > 95) p.wants = 95;
-}
+  if (el.id === 'txn-filter') {
+    state.ui.filter = el.value;
+    render();
+  }
+  if (el.dataset && el.dataset.plan) {
+    state.planner[el.dataset.plan] = Number(el.value);
+    save();
+    render();
+  }
+});
 
-document.addEventListener('click', (ev) => {
-  const el = ev.target.closest('[data-action]');
+document.addEventListener('click', (event) => {
+  const el = event.target.closest('[data-action]');
   if (!el) return;
   const action = el.dataset.action;
-
   if (action === 'switch-month') {
     state.month = el.dataset.month;
     save();
     render();
-  }
-
-  if (action === 'delete-txn') {
-    const month = state.months[state.month];
-    month.spend = month.spend.filter((r) => r.id !== el.dataset.id);
+  } else if (action === 'delete-txn') {
+    state.deleted.push(el.dataset.id);
+    state.added = state.added.filter((r) => r.id !== el.dataset.id);
     save();
     render();
-  }
-
-  if (action === 'adjust-budget') {
-    const cat = SEED.categories.find((c) => c.id === el.dataset.cat);
-    if (!cat) return;
-    const answer = window.prompt(`New monthly limit for ${cat.name}?`, String(state.limits[cat.id]));
-    if (answer === null) return;
-    const next = Math.round(Number(answer) * 100) / 100;
-    if (Number.isFinite(next) && next > 0) {
-      state.limits[cat.id] = next;
+  } else if (action === 'export-csv') {
+    downloadCsv();
+  } else if (action === 'reset-demo') {
+    localStorage.removeItem(KEY);
+    state = defaultState();
+    render();
+  } else if (action === 'adjust-budget') {
+    state.ui.editingBudget = el.dataset.cat;
+    render();
+    const input = document.getElementById('adjust-input');
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  } else if (action === 'cancel-budget') {
+    state.ui.editingBudget = null;
+    render();
+  } else if (action === 'save-budget') {
+    const input = document.getElementById('adjust-input');
+    const value = Number(input?.value);
+    if (value > 0) {
+      state.limits[el.dataset.cat] = Math.round(value);
+      save();
+    }
+    state.ui.editingBudget = null;
+    render();
+  } else if (action === 'goal-add') {
+    const id = el.dataset.id;
+    const amount = Number(el.dataset.amount);
+    const goal = GOALS.find((g) => g.id === id);
+    if (goal && amount > 0) {
+      state.goals[id] = round2(goalSaved(state, goal) + amount);
       save();
       render();
     }
-  }
-
-  if (action === 'goal-add') {
-    const goal = state.goals.find((g) => g.id === el.dataset.id);
-    if (!goal) return;
-    goal.saved = Math.round((goal.saved + Number(el.dataset.amount)) * 100) / 100;
+  } else if (action === 'pay-bill') {
+    if (!state.paid.includes(el.dataset.id)) state.paid.push(el.dataset.id);
     save();
     render();
-  }
-
-  if (action === 'pay-bill' || action === 'unpay-bill') {
-    const bill = state.bills.find((b) => b.id === el.dataset.id);
-    if (!bill) return;
-    bill.paid = action === 'pay-bill';
+  } else if (action === 'unpay-bill') {
+    state.paid = state.paid.filter((id) => id !== el.dataset.id);
     save();
     render();
-  }
-
-  if (action === 'export-csv') downloadCsv();
-
-  if (action === 'reset-demo') {
-    if (window.confirm('Reset everything to the demo data? Your added transactions, budget changes, goal top-ups and paid bills will be replaced.')) {
-      state = freshState();
-      ui.search = '';
-      ui.filter = '';
-      save();
-      render();
-    }
-  }
-});
-
-document.addEventListener('input', (ev) => {
-  const el = ev.target;
-  if (el.id === 'txn-search') {
-    ui.search = el.value;
-    keepSearchFocus = true;
-    render();
-    return;
-  }
-  if (el.id === 'planner-pay') {
-    const v = Number(el.value);
-    if (Number.isFinite(v) && v >= 0) {
-      state.planner.pay = Math.round(v);
-      save();
-      refreshPlannerDom();
-    }
-    return;
-  }
-  if (el.id === 'planner-needs') {
-    state.planner.needs = Number(el.value);
-    clampPlanner('needs');
-    const other = document.querySelector('#planner-wants');
-    if (other) other.value = String(state.planner.wants);
+  } else if (action === 'apply-plan') {
+    state.limits.dining = state.planner.dining;
+    state.limits.groceries = state.planner.groceries;
     save();
-    refreshPlannerDom();
-    return;
-  }
-  if (el.id === 'planner-wants') {
-    state.planner.wants = Number(el.value);
-    clampPlanner('wants');
-    const other = document.querySelector('#planner-needs');
-    if (other) other.value = String(state.planner.needs);
-    save();
-    refreshPlannerDom();
-  }
-});
-
-document.addEventListener('change', (ev) => {
-  const el = ev.target;
-  if (el.id === 'txn-filter') {
-    ui.filter = el.value;
+    location.hash = '#/budgets';
     render();
   }
 });
 
-document.addEventListener('submit', (ev) => {
-  const form = ev.target;
-  if (form.id === 'txn-form') {
-    ev.preventDefault();
-    const merchant = document.querySelector('#txn-merchant').value.trim();
-    const category = document.querySelector('#txn-category').value;
-    const amount = Math.round(Number(document.querySelector('#txn-amount').value) * 100) / 100;
-    const date = document.querySelector('#txn-date').value;
-    if (!merchant || !Number.isFinite(amount) || amount <= 0 || !date) return;
-    const key = date.slice(0, 7);
-    const row = {
-      id: `u${Date.now()}`,
-      date,
-      merchant,
-      note: 'Added by the family',
-      category,
-      amount,
-    };
-    if (state.months[key]) {
-      state.months[key].spend.push(row);
-      state.month = key;
-    } else {
-      state.months[state.month].spend.push(row);
-    }
-    save();
-    render();
-    const note = document.querySelector('.txn-form .hint');
-    if (note) note.textContent = `${merchant} — $${amount.toFixed(2)} added. Dashboard, budgets and reports already include it.`;
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && event.target.id === 'adjust-input') {
+    event.preventDefault();
+    document.querySelector('[data-action="save-budget"]')?.click();
   }
-  if (form.id === 'planner-form') ev.preventDefault();
 });
 
-window.addEventListener('hashchange', () => {
-  keepSearchFocus = false;
-  render();
-});
-
+window.addEventListener('hashchange', render);
 render();
