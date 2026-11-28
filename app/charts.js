@@ -1,135 +1,153 @@
-// Canvas charts for Hearth: a spending donut, grouped monthly bars and a small
-// trend strip. No library — plain 2D canvas, drawn after each render, scaled for
-// the screen's pixel density so the lines stay crisp.
+// Hearth — charts.js. Small SVG chart builders: the house floor plan,
+// monthly bars, grouped category bars and the kept-rate line. No library,
+// no network; every chart is a string of SVG.
 
-function setupCanvas(canvas, width, height) {
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(width * dpr);
-  canvas.height = Math.round(height * dpr);
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-  return ctx;
+// Money helpers shared by the views.
+function money(n) {
+  return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function money0(n) {
+  return "$" + Math.round(n).toLocaleString("en-US");
+}
+function pct(part, whole) {
+  return Math.round((part / whole) * 100);
 }
 
-export function drawDonut(canvas, segments, centerTop, centerBottom) {
-  const size = 240;
-  const ctx = setupCanvas(canvas, size, size);
-  const cx = size / 2;
-  const cy = size / 2;
-  const outer = 104;
-  const inner = 66;
-  const total = segments.reduce((a, s) => a + s.value, 0);
-  let angle = -Math.PI / 2;
-  for (const s of segments) {
-    if (s.value <= 0) continue;
-    const sweep = (s.value / total) * Math.PI * 2;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, outer, angle, angle + sweep);
-    ctx.closePath();
-    ctx.fillStyle = s.color;
-    ctx.fill();
-    angle += sweep;
-  }
-  // Punch the hole out and ring it, so the middle reads as a label, not a pie.
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.beginPath();
-  ctx.arc(cx, cy, inner, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.beginPath();
-  ctx.arc(cx, cy, inner, 0, Math.PI * 2);
-  ctx.strokeStyle = '#e7ddc8';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  ctx.fillStyle = '#1f2a22';
-  ctx.font = '700 26px Georgia, serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(centerTop, cx, cy - 12);
-  ctx.fillStyle = '#78716c';
-  ctx.font = '12px system-ui, sans-serif';
-  ctx.fillText(centerBottom, cx, cy + 14);
+// A thin fill bar: spent against budget. Over budget turns terracotta.
+function fillBar(spent, budget, over) {
+  const w = Math.min(100, (spent / budget) * 100);
+  const cls = over ? "bar-over" : "bar-fill";
+  return '<span class="bar"><span class="' + cls + '" style="width:' + w.toFixed(1) + '%"></span></span>';
 }
 
-// Grouped bars: one group per month, one bar per category inside it, with a
-// legend of the categories that actually appear.
-export function drawGroupedBars(canvas, months, categories, values) {
-  const width = 640;
-  const height = 300;
-  const ctx = setupCanvas(canvas, width, height);
-  const padL = 46;
-  const padR = 10;
-  const padT = 14;
-  const padB = 34;
-  const plotW = width - padL - padR;
-  const plotH = height - padT - padB;
-  const max = Math.max(...values.flat()) * 1.1;
-  const groupW = plotW / months.length;
-  const barW = Math.min(16, (groupW - 14) / categories.length);
-
-  ctx.strokeStyle = '#e7ddc8';
-  ctx.fillStyle = '#78716c';
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  for (let g = 0; g <= 4; g++) {
-    const y = padT + (plotH * g) / 4;
-    const v = Math.round((max * (4 - g)) / 4);
-    ctx.beginPath();
-    ctx.moveTo(padL, y);
-    ctx.lineTo(width - padR, y);
-    ctx.stroke();
-    ctx.fillText(`$${v.toLocaleString('en-US')}`, padL - 8, y);
+// Five small vertical bars, one per month, for the dashboard strip.
+function miniBars(values, labels, highlight) {
+  const max = Math.max.apply(null, values);
+  let out = '<div class="minibars" role="img" aria-label="Monthly spending, July to November">';
+  for (let i = 0; i < values.length; i++) {
+    const h = Math.max(6, Math.round((values[i] / max) * 64));
+    out += '<div class="minibar' + (i === highlight ? ' hot' : '') + '">'
+      + '<span class="minibar-val">' + money0(values[i]) + '</span>'
+      + '<span class="minibar-col" style="height:' + h + 'px"></span>'
+      + '<span class="minibar-lab">' + labels[i] + '</span></div>';
   }
+  return out + '</div>';
+}
 
-  months.forEach((m, mi) => {
-    const groupX = padL + mi * groupW;
-    const innerW = categories.length * barW;
-    categories.forEach((c, ci) => {
-      const v = values[mi][ci];
-      const h = (v / max) * plotH;
-      ctx.fillStyle = c.color;
-      ctx.fillRect(groupX + (groupW - innerW) / 2 + ci * barW, padT + plotH - h, barW - 1.5, h);
+// Grouped bars: one cluster per category, one bar per month.
+function groupedBars(categories, months) {
+  const all = [];
+  categories.forEach(function (c) {
+    months.forEach(function (m) { all.push(c.spent[m]); });
+  });
+  const max = Math.max.apply(null, all);
+  const W = 880, H = 300, padL = 44, padB = 30, padT = 12;
+  const plotW = W - padL - 8, plotH = H - padT - padB;
+  const clusterW = plotW / categories.length;
+  const barW = Math.min(16, (clusterW - 14) / months.length);
+  const shades = ["#c96f4a", "#d99a5b", "#8a9b7a", "#5b7a6e", "#2e4a3f"];
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart" role="img" aria-label="Spending by category, July to November">';
+  // gridlines
+  [0.25, 0.5, 0.75, 1].forEach(function (f) {
+    const y = padT + plotH * (1 - f);
+    s += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - 8) + '" y2="' + y + '" class="gridline"/>';
+    s += '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" class="axis">' + money0(max * f) + '</text>';
+  });
+  categories.forEach(function (c, ci) {
+    const cx = padL + ci * clusterW;
+    months.forEach(function (m, mi) {
+      const v = c.spent[m];
+      const h = Math.max(2, (v / max) * plotH);
+      const x = cx + 7 + mi * barW;
+      const y = padT + plotH - h;
+      s += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (barW - 2) + '" height="' + h.toFixed(1) + '" fill="' + shades[mi] + '"><title>' + c.label + ' · ' + m + ' ' + money(v) + '</title></rect>';
     });
-    ctx.fillStyle = '#44403c';
-    ctx.textAlign = 'center';
-    ctx.fillText(m, groupX + groupW / 2, height - 14);
-    ctx.fillStyle = '#78716c';
-    ctx.font = '700 11px system-ui, sans-serif';
-    const total = values[mi].reduce((a, b) => a + b, 0);
-    ctx.fillText(`$${total.toLocaleString('en-US')}`, groupX + groupW / 2, padT + plotH - Math.max(...values[mi]) / max * plotH - 8);
-    ctx.font = '11px system-ui, sans-serif';
+    s += '<text x="' + (cx + clusterW / 2) + '" y="' + (H - 10) + '" class="axis center">' + c.label.split(" ")[0] + '</text>';
   });
+  // legend
+  months.forEach(function (m, mi) {
+    const x = padL + mi * 74;
+    s += '<rect x="' + x + '" y="0" width="10" height="10" fill="' + shades[mi] + '"/><text x="' + (x + 14) + '" y="9" class="axis">' + m + '</text>';
+  });
+  return s + '</svg>';
 }
 
-// Small vertical bars for the dashboard's five-month strip.
-export function drawTrendBars(canvas, labels, values, highlightIndex) {
-  const width = 300;
-  const height = 120;
-  const ctx = setupCanvas(canvas, width, height);
-  const padB = 22;
-  const plotH = height - padB - 8;
-  const max = Math.max(...values) * 1.08;
-  const slot = width / values.length;
-  const barW = 34;
-  values.forEach((v, i) => {
-    const h = (v / max) * plotH;
-    const x = i * slot + (slot - barW) / 2;
-    ctx.fillStyle = i === highlightIndex ? '#b45309' : '#1d4d2b';
-    ctx.globalAlpha = i === highlightIndex ? 1 : 0.55;
-    ctx.beginPath();
-    ctx.roundRect(x, 8 + plotH - h, barW, h, 4);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = '#44403c';
-    ctx.font = '700 11px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(`$${(v / 1000).toFixed(1)}k`, i * slot + slot / 2, 8 + plotH - h - 6);
-    ctx.fillStyle = '#78716c';
-    ctx.font = '11px system-ui, sans-serif';
-    ctx.fillText(labels[i], i * slot + slot / 2, height - 8);
+// Kept-rate line: the share of income the family kept each month.
+function keptLine(rates, labels) {
+  const W = 880, H = 190, padL = 44, padB = 28, padT = 16;
+  const plotW = W - padL - 14, plotH = H - padT - padB;
+  const max = 20;
+  const x = function (i) { return padL + (i / (rates.length - 1)) * plotW; };
+  const y = function (r) { return padT + plotH * (1 - r / max); };
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart" role="img" aria-label="Share of income kept, July to November">';
+  [0, 5, 10, 15, 20].forEach(function (v) {
+    const yy = y(v);
+    s += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (W - 14) + '" y2="' + yy + '" class="gridline"/>';
+    s += '<text x="' + (padL - 6) + '" y="' + (yy + 4) + '" class="axis">' + v + '%</text>';
   });
+  let path = "";
+  rates.forEach(function (r, i) { path += (i === 0 ? "M" : "L") + x(i).toFixed(1) + " " + y(r).toFixed(1) + " "; });
+  s += '<path d="' + path + '" class="kept-path"/>';
+  rates.forEach(function (r, i) {
+    s += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(r).toFixed(1) + '" r="5" class="kept-dot"/>';
+    s += '<text x="' + x(i).toFixed(1) + '" y="' + (y(r) - 10) + '" class="axis center strong">' + r.toFixed(1) + '%</text>';
+    s += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 8) + '" class="axis center">' + labels[i] + '</text>';
+  });
+  return s + '</svg>';
+}
+
+// The house itself: a hand-drawn floor plan. Each room is a button that
+// opens its category. viewBox 0 0 960 525. Upstairs: Bedroom, Kids' Room,
+// Bathroom. Downstairs: Garage, Kitchen, Dining Room, Living Room. The
+// garden runs along the bottom as the yard.
+function housePlan(categories, selectedId) {
+  function cat(id) { return categories.find(function (c) { return c.id === id; }); }
+  // room: [id, x, y, w, h]
+  const rooms = [
+    ["housing", 80, 150, 270, 140],
+    ["kids", 350, 150, 260, 140],
+    ["health", 610, 150, 270, 140],
+    ["transport", 80, 290, 200, 140],
+    ["groceries", 280, 290, 220, 140],
+    ["dining", 500, 290, 180, 140],
+    ["entertainment", 680, 290, 200, 140]
+  ];
+  let s = '<svg viewBox="0 0 960 525" class="house" role="group" aria-label="Floor plan of the Alvarez house. Each room is a budget category.">';
+  // roof
+  s += '<polygon points="40,150 480,40 920,150" class="roof"/>';
+  s += '<text x="480" y="102" class="house-title">The Alvarez House</text>';
+  s += '<text x="480" y="124" class="house-sub">Austin, Texas · tap a room to open its books</text>';
+  // chimney
+  s += '<rect x="700" y="58" width="34" height="48" class="chimney"/>';
+  // rooms
+  rooms.forEach(function (r) {
+    const c = cat(r[0]);
+    const over = c.spent.Nov > c.budget;
+    const sel = c.id === selectedId;
+    s += '<g class="room' + (sel ? ' selected' : '') + '" data-room="' + c.id + '" tabindex="0" role="button" aria-label="' + c.room + ', ' + c.label + ', spent ' + money(c.spent.Nov) + ' of ' + money(c.budget) + '">'
+      + '<rect x="' + r[1] + '" y="' + r[2] + '" width="' + r[3] + '" height="' + r[4] + '" class="room-rect"/>'
+      + '<text x="' + (r[1] + 14) + '" y="' + (r[2] + 26) + '" class="room-name">' + c.room + '</text>'
+      + '<text x="' + (r[1] + 14) + '" y="' + (r[2] + 46) + '" class="room-cat">' + c.label + '</text>'
+      + '<text x="' + (r[1] + 14) + '" y="' + (r[2] + 72) + '" class="room-amt">' + money(c.spent.Nov) + '</text>'
+      + '<text x="' + (r[1] + 14) + '" y="' + (r[2] + 90) + '" class="room-bud">of ' + money(c.budget) + (over ? ' · over by ' + money(c.spent.Nov - c.budget) : '') + '</text>'
+      + '<rect x="' + (r[1] + 14) + '" y="' + (r[2] + 102) + '" width="' + (r[3] - 28) + '" height="8" rx="4" class="room-track"/>'
+      + '<rect x="' + (r[1] + 14) + '" y="' + (r[2] + 102) + '" width="' + Math.max(4, ((r[3] - 28) * Math.min(1, c.spent.Nov / c.budget))).toFixed(1) + '" height="8" rx="4" class="' + (over ? 'room-fill-over' : 'room-fill') + '"/>'
+      + '<text x="' + (r[1] + r[3] - 14) + '" y="' + (r[2] + r[4] - 12) + '" class="room-pct">' + pct(c.spent.Nov, c.budget) + '%</text>'
+      + '</g>';
+  });
+  // garden strip
+  const g = cat("home");
+  const gover = g.spent.Nov > g.budget;
+  s += '<g class="room garden' + (g.id === selectedId ? ' selected' : '') + '" data-room="home" tabindex="0" role="button" aria-label="Garden, Home and garden, spent ' + money(g.spent.Nov) + ' of ' + money(g.budget) + '">'
+    + '<rect x="80" y="440" width="800" height="55" class="room-rect garden-rect"/>'
+    + '<text x="100" y="462" class="room-name">Garden</text>'
+    + '<text x="100" y="480" class="room-cat">Home &amp; garden</text>'
+    + '<text x="330" y="464" class="room-amt">' + money(g.spent.Nov) + ' of ' + money(g.budget) + (gover ? ' · over by ' + money(g.spent.Nov - g.budget) : '') + '</text>'
+    + '<rect x="330" y="474" width="300" height="8" rx="4" class="room-track"/>'
+    + '<rect x="330" y="474" width="' + Math.max(4, (300 * Math.min(1, g.spent.Nov / g.budget))).toFixed(1) + '" height="8" rx="4" class="' + (gover ? 'room-fill-over' : 'room-fill') + '"/>'
+    + '<text x="860" y="476" class="room-pct">' + pct(g.spent.Nov, g.budget) + '%</text>'
+    + '<circle cx="700" cy="458" r="9" class="tree"/><rect x="697" y="464" width="6" height="12" class="trunk"/>'
+    + '</g>';
+  s += '<text x="480" y="516" class="house-foot">Every dollar in this house has a room. Nothing is unaccounted for.</text>';
+  return s + '</svg>';
 }

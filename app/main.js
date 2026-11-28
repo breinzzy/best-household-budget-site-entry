@@ -1,262 +1,235 @@
-// Hearth's shell: hash routing, the household's own changes kept in localStorage,
-// and every control on every page. The seed data never changes — the state holds
-// only what the family did (added rows, deleted rows, adjusted limits, goal
-// top-ups, paid bills, planner sliders), so Reset demo data restores the seed.
-//
-//   #/                Dashboard
-//   #/transactions    the ledger, with the add form
-//   #/budgets         monthly limits
-//   #/goals           saving goals
-//   #/bills           December's bills
-//   #/reports          five months of reports
-//   #/planner          what-if sliders
-//
-// window.__shotReady is false while a page renders and true once it is on
-// screen, so a screenshot script knows when to capture.
+// Hearth — main.js. The router, the store and every control.
+// The store is a copy of the seed data kept in localStorage, so the site
+// remembers what the family did with it; "Start over" restores the seed.
 
-import { BILLS, CATEGORIES, GOALS, TREND } from './data.js';
-import { drawDonut, drawGroupedBars, drawTrendBars } from './charts.js';
-import {
-  catById,
-  goalSaved,
-  round2,
-  rowsFor,
-  totalsFor,
-  viewBills,
-  viewBudgets,
-  viewDashboard,
-  viewGoals,
-  viewPlanner,
-  viewReports,
-  viewTransactions,
-} from './views.js';
+const STORE_KEY = "hearth-alvarez-v4";
 
-const KEY = 'hearth-v3';
-
-function defaultState() {
-  return {
-    month: '2026-11',
-    added: [],
-    deleted: [],
-    limits: {},
-    goals: {},
-    paid: [],
-    planner: { pay: 7240, extra: 0, dining: 260, groceries: 850 },
-    ui: { search: '', filter: '', editingBudget: null },
-  };
+function freshState() {
+  return JSON.parse(JSON.stringify(HEARTH));
 }
 
 function loadState() {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return defaultState();
-    const s = JSON.parse(raw);
-    return { ...defaultState(), ...s, ui: { ...defaultState().ui, ...(s.ui || {}) }, planner: { ...defaultState().planner, ...(s.planner || {}) } };
-  } catch {
-    return defaultState();
-  }
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (s && s.categories && s.txNov && s.goals && s.bills) return s;
+    }
+  } catch (e) { /* a fresh start is always safe */ }
+  return freshState();
 }
 
-let state = loadState();
-function save() {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(state));
-  } catch {
-    // Private mode or a full store: the site still works for the session.
-  }
+function saveState() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(Store.state)); } catch (e) { /* private mode */ }
 }
 
-const app = document.getElementById('app');
-const billsBadge = document.getElementById('bills-badge');
-
-function drawCharts() {
-  const donut = document.getElementById('donut');
-  if (donut) {
-    const t = totalsFor(state, state.month);
-    const segments = CATEGORIES.map((c) => ({ color: c.color, value: t.byCat[c.id] || 0 }));
-    drawDonut(donut, segments, '$' + Math.floor(t.spent).toLocaleString('en-US'), 'spent');
-  }
-  const trend = document.getElementById('trend-bars');
-  if (trend) {
-    drawTrendBars(
-      trend,
-      TREND.map((m) => m.month.slice(0, 3)),
-      TREND.map((m) => m.total),
-      TREND.length - 1,
-    );
-  }
-  const grouped = document.getElementById('grouped-bars');
-  if (grouped) {
-    drawGroupedBars(
-      grouped,
-      TREND.map((m) => m.month.replace(' 2026', '')),
-      CATEGORIES,
-      TREND.map((m) => CATEGORIES.map((c) => m.byCategory[c.id])),
-    );
-  }
-}
-
-const ROUTES = {
-  '/': { title: 'Dashboard', view: viewDashboard },
-  '/transactions': { title: 'Transactions', view: viewTransactions },
-  '/budgets': { title: 'Budgets', view: viewBudgets },
-  '/goals': { title: 'Goals', view: viewGoals },
-  '/bills': { title: 'Bills', view: viewBills },
-  '/reports': { title: 'Reports', view: viewReports },
-  '/planner': { title: 'Planner', view: viewPlanner },
+const Store = {
+  state: loadState(),
+  month: "Nov",
+  selectedRoom: "groceries",
+  ledgerQ: "",
+  ledgerCat: "all",
+  planner: { diningCap: 260, funCap: 320, saveGoal: 1200 }
 };
 
+const ROUTES = {
+  "": viewHouse,
+  "transactions": viewLedger,
+  "budgets": viewBudgets,
+  "goals": viewGoals,
+  "bills": viewBills,
+  "reports": viewReports,
+  "planner": viewPlanner
+};
+
+const TITLES = {
+  "": "The House",
+  "transactions": "The Ledger",
+  "budgets": "Envelopes",
+  "goals": "Milestones",
+  "bills": "The Calendar",
+  "reports": "The Year So Far",
+  "planner": "The Plan"
+};
+
+function route() {
+  const hash = location.hash.replace(/^#\/?/, "").split("?")[0];
+  return ROUTES[hash] ? hash : "";
+}
+
 function render() {
-  window.__shotReady = false;
-  const path = location.hash.replace(/^#/, '') || '/';
-  const route = ROUTES[path] || ROUTES['/'];
-  document.title = `${route.title} | Hearth — Household Budget`;
-  document.querySelectorAll('nav a').forEach((a) => {
-    a.classList.toggle('on', a.getAttribute('href') === `#${path}`);
+  const r = route();
+  const view = ROUTES[r];
+  document.getElementById("view").innerHTML = view(Store);
+  document.querySelectorAll("nav a").forEach(function (a) {
+    a.classList.toggle("active", a.getAttribute("href") === "#/" + r);
   });
-  app.innerHTML = route.view(state);
-  const due = BILLS.filter((b) => !state.paid.includes(b.id)).length;
-  if (billsBadge) billsBadge.textContent = due ? `${due} due` : 'all paid';
-  drawCharts();
-  window.scrollTo(0, 0);
-  window.__shotReady = true;
+  document.getElementById("month-label").textContent =
+    Store.month === "Nov" ? "November 2026" : "October 2026";
+  document.querySelectorAll(".month-btn").forEach(function (b) {
+    b.classList.toggle("active", b.dataset.month === Store.month);
+  });
+  bindHousePlan();
 }
 
-function downloadCsv() {
-  const rows = rowsFor(state, state.month).sort((a, b) => (a.date < b.date ? 1 : -1));
-  const lines = ['date,merchant,note,category,amount'];
-  for (const r of rows) {
-    const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
-    lines.push([r.date, q(r.merchant), q(r.note), catById(r.category).name, r.amount.toFixed(2)].join(','));
-  }
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
-  const a = document.createElement('a');
+function bindHousePlan() {
+  document.querySelectorAll(".house .room").forEach(function (el) {
+    el.addEventListener("click", function () {
+      Store.selectedRoom = el.dataset.room;
+      render();
+      const d = document.getElementById("room-detail");
+      if (d) d.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    el.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        Store.selectedRoom = el.dataset.room;
+        render();
+      }
+    });
+  });
+}
+
+function download(filename, text) {
+  const blob = new Blob([text], { type: "text/csv" });
+  const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `hearth-${state.month}-transactions.csv`;
+  a.download = filename;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(a.href);
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 200);
 }
 
-function addTransaction(form) {
-  const merchant = form.merchant.value.trim();
-  const category = form.category.value;
-  const amount = Number(form.amount.value);
-  const date = form.date.value;
-  if (!merchant || !category || !(amount > 0) || !date) return;
-  state.added.push({
-    id: `u-${Date.now()}`,
-    month: state.month,
-    date,
-    merchant,
-    note: 'Added by the family',
-    category,
-    amount: round2(amount),
+function exportCsv() {
+  const month = Store.month;
+  const rows = sortedTx(Store.state, month);
+  let csv = "date,what,room,amount\n";
+  rows.forEach(function (t) {
+    const c = catById(Store.state, t.cat);
+    csv += '"' + t.d + '","' + t.label.replace(/"/g, '""') + '","' + c.room + '",' + t.amount.toFixed(2) + "\n";
   });
-  save();
-  render();
+  download("alvarez-" + month.toLowerCase() + "-2026.csv", csv);
 }
 
-document.addEventListener('submit', (event) => {
-  if (event.target.id === 'txn-form') {
-    event.preventDefault();
-    addTransaction(event.target);
-  }
-});
+function wire() {
+  window.addEventListener("hashchange", render);
 
-document.addEventListener('input', (event) => {
-  const el = event.target;
-  if (el.id === 'txn-search') {
-    state.ui.search = el.value;
-    const pos = el.selectionStart;
-    render();
-    const again = document.getElementById('txn-search');
-    if (again) {
-      again.focus();
-      again.setSelectionRange(pos, pos);
-    }
-  }
-  if (el.id === 'txn-filter') {
-    state.ui.filter = el.value;
-    render();
-  }
-  if (el.dataset && el.dataset.plan) {
-    state.planner[el.dataset.plan] = Number(el.value);
-    save();
-    render();
-  }
-});
-
-document.addEventListener('click', (event) => {
-  const el = event.target.closest('[data-action]');
-  if (!el) return;
-  const action = el.dataset.action;
-  if (action === 'switch-month') {
-    state.month = el.dataset.month;
-    save();
-    render();
-  } else if (action === 'delete-txn') {
-    state.deleted.push(el.dataset.id);
-    state.added = state.added.filter((r) => r.id !== el.dataset.id);
-    save();
-    render();
-  } else if (action === 'export-csv') {
-    downloadCsv();
-  } else if (action === 'reset-demo') {
-    localStorage.removeItem(KEY);
-    state = defaultState();
-    render();
-  } else if (action === 'adjust-budget') {
-    state.ui.editingBudget = el.dataset.cat;
-    render();
-    const input = document.getElementById('adjust-input');
-    if (input) {
-      input.focus();
-      input.select();
-    }
-  } else if (action === 'cancel-budget') {
-    state.ui.editingBudget = null;
-    render();
-  } else if (action === 'save-budget') {
-    const input = document.getElementById('adjust-input');
-    const value = Number(input?.value);
-    if (value > 0) {
-      state.limits[el.dataset.cat] = Math.round(value);
-      save();
-    }
-    state.ui.editingBudget = null;
-    render();
-  } else if (action === 'goal-add') {
-    const id = el.dataset.id;
-    const amount = Number(el.dataset.amount);
-    const goal = GOALS.find((g) => g.id === id);
-    if (goal && amount > 0) {
-      state.goals[id] = round2(goalSaved(state, goal) + amount);
-      save();
+  // Month switch + reset, in the header.
+  document.querySelectorAll(".month-btn").forEach(function (b) {
+    b.addEventListener("click", function () {
+      Store.month = b.dataset.month;
+      render();
+    });
+  });
+  document.getElementById("reset-btn").addEventListener("click", function () {
+    if (window.confirm("Start over? Every change — new lines, paid bills, moved money — goes back to how November began.")) {
+      Store.state = freshState();
+      Store.selectedRoom = "groceries";
+      Store.ledgerQ = "";
+      Store.ledgerCat = "all";
+      saveState();
       render();
     }
-  } else if (action === 'pay-bill') {
-    if (!state.paid.includes(el.dataset.id)) state.paid.push(el.dataset.id);
-    save();
-    render();
-  } else if (action === 'unpay-bill') {
-    state.paid = state.paid.filter((id) => id !== el.dataset.id);
-    save();
-    render();
-  } else if (action === 'apply-plan') {
-    state.limits.dining = state.planner.dining;
-    state.limits.groceries = state.planner.groceries;
-    save();
-    location.hash = '#/budgets';
-    render();
-  }
-});
+  });
 
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && event.target.id === 'adjust-input') {
-    event.preventDefault();
-    document.querySelector('[data-action="save-budget"]')?.click();
-  }
-});
+  // One delegated click handler for every button in the views.
+  document.getElementById("view").addEventListener("click", function (ev) {
+    const el = ev.target.closest("[data-action]");
+    const roomBtn = ev.target.closest("[data-room].room-row");
+    if (roomBtn) {
+      Store.selectedRoom = roomBtn.dataset.room;
+      render();
+      return;
+    }
+    const ledgerLink = ev.target.closest("[data-ledger-cat]");
+    if (ledgerLink) {
+      Store.ledgerCat = ledgerLink.dataset.ledgerCat;
+      return; // the hash change renders the ledger
+    }
+    if (!el) return;
+    const action = el.dataset.action;
+    if (action === "select-room") {
+      Store.selectedRoom = el.dataset.room;
+      render();
+    } else if (action === "export-csv") {
+      exportCsv();
+    } else if (action === "del-txn") {
+      const key = el.dataset;
+      const list = txOfMonth(Store.state, Store.month);
+      const i = list.findIndex(function (t) {
+        return t.d === key.d && t.label === key.label && String(t.amount) === key.amount;
+      });
+      if (i !== -1 && window.confirm("Rub out “" + key.label + "” (" + money(parseFloat(key.amount)) + ")?")) {
+        list.splice(i, 1);
+        saveState();
+        render();
+      }
+    } else if (action === "goal-add") {
+      const g = Store.state.goals.find(function (x) { return x.id === el.dataset.goal; });
+      if (g) {
+        g.saved = Math.min(g.target, g.saved + parseFloat(el.dataset.amount));
+        saveState();
+        render();
+      }
+    } else if (action === "bill-paid") {
+      const b = Store.state.bills.find(function (x) { return x.id === el.dataset.bill; });
+      if (b) {
+        b.paid = true;
+        saveState();
+        render();
+      }
+    }
+  });
 
-window.addEventListener('hashchange', render);
+  // Ledger search + filter, and the add-a-line form (delegated: the view
+  // re-renders, so listen on the container, not the inputs).
+  document.getElementById("view").addEventListener("input", function (ev) {
+    if (ev.target.id === "ledger-q") {
+      Store.ledgerQ = ev.target.value;
+      render();
+      const q = document.getElementById("ledger-q");
+      if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+    } else if (ev.target.id === "cap-dining") {
+      Store.planner.diningCap = parseInt(ev.target.value, 10);
+      render();
+    } else if (ev.target.id === "cap-fun") {
+      Store.planner.funCap = parseInt(ev.target.value, 10);
+      render();
+    } else if (ev.target.id === "save-goal") {
+      Store.planner.saveGoal = parseInt(ev.target.value, 10);
+      render();
+    }
+  });
+  document.getElementById("view").addEventListener("change", function (ev) {
+    if (ev.target.id === "ledger-cat") {
+      Store.ledgerCat = ev.target.value;
+      render();
+    }
+  });
+  document.getElementById("view").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    if (ev.target.id === "add-txn") {
+      const day = parseInt(document.getElementById("add-day").value, 10);
+      const label = document.getElementById("add-label").value.trim();
+      const cat = document.getElementById("add-cat").value;
+      const amount = parseFloat(document.getElementById("add-amount").value);
+      if (!label || !(amount > 0) || day < 1 || day > 30) return;
+      const mon = Store.month === "Oct" ? "Oct" : "Nov";
+      txOfMonth(Store.state, Store.month).push({ d: mon + " " + day, cat: cat, label: label, amount: Math.round(amount * 100) / 100 });
+      saveState();
+      render();
+    } else if (ev.target.classList.contains("adjust")) {
+      const input = ev.target.querySelector("input");
+      const value = parseFloat(input.value);
+      const c = catById(Store.state, ev.target.dataset.cat);
+      if (c && value >= 0) {
+        c.budget = Math.round(value);
+        saveState();
+        render();
+      }
+    }
+  });
+}
+
+wire();
 render();
