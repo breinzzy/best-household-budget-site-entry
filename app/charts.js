@@ -151,3 +151,95 @@ function housePlan(categories, selectedId) {
   s += '<text x="480" y="516" class="house-foot">Every dollar in this house has a room. Nothing is unaccounted for.</text>';
   return s + '</svg>';
 }
+
+// One colour per room, reused by the Sankey so a room is the same colour
+// wherever it appears.
+const CAT_COLORS = {
+  groceries: "#c96f4a", dining: "#d99a5b", entertainment: "#8a9b7a",
+  housing: "#5b7a6e", kids: "#b08968", health: "#7d8c6f",
+  transport: "#a67c52", home: "#6b8e7d"
+};
+const SAVED_COLOR = "#2e4a3f";
+const LEFT_COLOR = "#d9a441";
+
+// The cashflow Sankey: income on the left, every destination on the
+// right, flows sized by the money in them. All figures come from the
+// live store, so it follows the month switch and any new transaction.
+function sankey(state, month) {
+  const income = state.income.total;
+  const spent = monthTotal(state, month);
+  const saved = monthSaved(state, month);
+  const left = monthLeft(state, month);
+  const dests = state.categories.map(function (c) {
+    return { name: c.room, amount: catSpent(state, c.id, month), color: CAT_COLORS[c.id] };
+  }).sort(function (a, b) { return b.amount - a.amount; });
+  dests.push({ name: "Put aside", amount: saved, color: SAVED_COLOR });
+  dests.push({ name: "Still unassigned", amount: left, color: LEFT_COLOR });
+
+  const W = 880, H = 360, y0 = 14, plotH = 280, gap = 4;
+  const xA = 16, wA = 110, xB = 400, wB = 130, xL = 542;
+  const sA = plotH / income;
+  const sB = (plotH - (dests.length - 1) * gap) / income;
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart sankey" role="img" aria-label="Cashflow: ' + money(income) + ' brought home, ' + money(spent) + ' spent, ' + money(saved) + ' put aside, ' + money(left) + ' unassigned">';
+  // Source segments on the income node: same order as the destinations,
+  // no gaps, so no flow ever crosses another.
+  let ay = y0;
+  const segs = dests.map(function (d) {
+    const h = d.amount * sA;
+    const seg = { d: d, y0: ay, y1: ay + h };
+    ay += h;
+    return seg;
+  });
+  // Flows first, under the nodes.
+  let by = y0;
+  segs.forEach(function (seg) {
+    const h = seg.d.amount * sB;
+    const yB0 = by, yB1 = by + h;
+    by += h + gap;
+    const mx = (xA + wA + xB) / 2;
+    s += '<path d="M ' + (xA + wA) + ' ' + seg.y0.toFixed(1)
+      + ' C ' + mx + ' ' + seg.y0.toFixed(1) + ', ' + mx + ' ' + yB0.toFixed(1) + ', ' + xB + ' ' + yB0.toFixed(1)
+      + ' L ' + xB + ' ' + yB1.toFixed(1)
+      + ' C ' + mx + ' ' + yB1.toFixed(1) + ', ' + mx + ' ' + seg.y1.toFixed(1) + ', ' + (xA + wA) + ' ' + seg.y1.toFixed(1)
+      + ' Z" fill="' + seg.d.color + '" opacity="0.38"/>';
+    seg.yB0 = yB0; seg.yB1 = yB1;
+  });
+  // Income node, with its label inside.
+  s += '<rect x="' + xA + '" y="' + y0 + '" width="' + wA + '" height="' + plotH + '" class="sankey-src"/>';
+  s += '<text x="' + (xA + wA / 2) + '" y="' + (y0 + plotH / 2 - 8) + '" class="sankey-big">Brought home</text>';
+  s += '<text x="' + (xA + wA / 2) + '" y="' + (y0 + plotH / 2 + 14) + '" class="sankey-big strong">' + money(income) + '</text>';
+  // Destination nodes, each labelled to its right with a colour chip.
+  segs.forEach(function (seg) {
+    const mid = (seg.yB0 + seg.yB1) / 2;
+    s += '<rect x="' + xB + '" y="' + seg.yB0.toFixed(1) + '" width="' + wB + '" height="' + Math.max(1, seg.yB1 - seg.yB0).toFixed(1) + '" fill="' + seg.d.color + '"/>';
+    s += '<rect x="' + xL + '" y="' + (mid - 5).toFixed(1) + '" width="10" height="10" fill="' + seg.d.color + '"/>';
+    s += '<text x="' + (xL + 16) + '" y="' + (mid + 4).toFixed(1) + '" class="sankey-label">' + seg.d.name + ' — ' + money(seg.d.amount) + '</text>';
+  });
+  s += '<text x="16" y="332" class="sankey-foot">Spent ' + money(spent) + ' · put aside ' + money(saved) + ' · still unassigned ' + money(left) + ' — kept ' + money(saved + left) + ' of the ' + money(income) + '.</text>';
+  return s + '</svg>';
+}
+
+// Twelve vertical bars, one per month, for the twelve-month trend.
+function trendBars(values, labels) {
+  const W = 880, H = 250, padL = 44, padB = 28, padT = 26;
+  const max = Math.max.apply(null, values);
+  const plotW = W - padL - 8, plotH = H - padT - padB;
+  const slot = plotW / values.length;
+  const bw = Math.min(44, slot - 16);
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart" role="img" aria-label="Monthly spending, December to November">';
+  [0.5, 1].forEach(function (f) {
+    const y = padT + plotH * (1 - f);
+    s += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - 8) + '" y2="' + y + '" class="gridline"/>';
+    s += '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" class="axis">' + money0(max * f) + '</text>';
+  });
+  values.forEach(function (v, i) {
+    const h = Math.max(3, (v / max) * plotH);
+    const x = padL + i * slot + (slot - bw) / 2;
+    const y = padT + plotH - h;
+    const last = i === values.length - 1;
+    s += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw + '" height="' + h.toFixed(1) + '" fill="' + (last ? '#c96f4a' : '#8a9b7a') + '"><title>' + labels[i] + ' ' + money(v) + '</title></rect>';
+    s += '<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (y - 6).toFixed(1) + '" class="axis center strong">' + money0(v) + '</text>';
+    s += '<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (H - 8) + '" class="axis center">' + labels[i] + '</text>';
+  });
+  return s + '</svg>';
+}

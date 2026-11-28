@@ -13,7 +13,14 @@ function loadState() {
     const raw = localStorage.getItem(STORE_KEY);
     if (raw) {
       const s = JSON.parse(raw);
-      if (s && s.categories && s.txNov && s.goals && s.bills) return s;
+      if (s && s.categories && s.txNov && s.goals && s.bills) {
+        // Older saves predate the v5 seed fields (debts, subscriptions,
+        // twelve-month data, member rules): fill in anything missing
+        // from the fresh seed, keeping every edit the family made.
+        const fresh = freshState();
+        for (const k in fresh) if (!(k in s)) s[k] = fresh[k];
+        return s;
+      }
     }
   } catch (e) { /* a fresh start is always safe */ }
   return freshState();
@@ -29,7 +36,15 @@ const Store = {
   selectedRoom: "groceries",
   ledgerQ: "",
   ledgerCat: "all",
-  planner: { diningCap: 260, funCap: 320, saveGoal: 1200 }
+  ledgerWho: "all",
+  debtExtra: 0,
+  stressCost: 2000,
+  planner: {
+    diningCap: 260, funCap: 320, saveGoal: 1200,
+    // Payday December 6 places $3,620: half of each envelope's budget,
+    // half of the monthly saving.
+    pay: { groceries: 425, dining: 130, entertainment: 160, housing: 750, kids: 225, health: 100, transport: 210, home: 300, save: 600 }
+  }
 };
 
 const ROUTES = {
@@ -39,7 +54,10 @@ const ROUTES = {
   "goals": viewGoals,
   "bills": viewBills,
   "reports": viewReports,
-  "planner": viewPlanner
+  "planner": viewPlanner,
+  "debt": viewDebt,
+  "subscriptions": viewSubs,
+  "stress": viewStress
 };
 
 const TITLES = {
@@ -49,7 +67,10 @@ const TITLES = {
   "goals": "Milestones",
   "bills": "The Calendar",
   "reports": "The Year So Far",
-  "planner": "The Plan"
+  "planner": "The Plan",
+  "debt": "The Mortgage & the Snowball",
+  "subscriptions": "The Subscription Audit",
+  "stress": "The Stress Lab"
 };
 
 function route() {
@@ -127,6 +148,7 @@ function wire() {
       Store.selectedRoom = "groceries";
       Store.ledgerQ = "";
       Store.ledgerCat = "all";
+      Store.ledgerWho = "all";
       saveState();
       render();
     }
@@ -178,6 +200,12 @@ function wire() {
         saveState();
         render();
       }
+    } else if (action === "sub-toggle") {
+      const off = Store.state.subsOff || (Store.state.subsOff = []);
+      const i = off.indexOf(el.dataset.sub);
+      if (i === -1) off.push(el.dataset.sub); else off.splice(i, 1);
+      saveState();
+      render();
     }
   });
 
@@ -198,11 +226,23 @@ function wire() {
     } else if (ev.target.id === "save-goal") {
       Store.planner.saveGoal = parseInt(ev.target.value, 10);
       render();
+    } else if (ev.target.id === "debt-extra") {
+      Store.debtExtra = parseInt(ev.target.value, 10);
+      render();
+    } else if (ev.target.id === "stress-cost") {
+      Store.stressCost = parseInt(ev.target.value, 10);
+      render();
+    } else if (ev.target.id && ev.target.id.indexOf("pay-") === 0) {
+      Store.planner.pay[ev.target.id.slice(4)] = parseInt(ev.target.value, 10);
+      render();
     }
   });
   document.getElementById("view").addEventListener("change", function (ev) {
     if (ev.target.id === "ledger-cat") {
       Store.ledgerCat = ev.target.value;
+      render();
+    } else if (ev.target.id === "ledger-who") {
+      Store.ledgerWho = ev.target.value;
       render();
     }
   });
