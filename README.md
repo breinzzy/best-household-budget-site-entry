@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/best-household-budget-site-20261126-1457/breinzzy/best-household-budget-site-entry/rank.svg)](https://make.fun/bounty/best-household-budget-site-20261126-1457/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-household-budget-site-20261126-1457)
 [![reward](https://make.fun/badge/best-household-budget-site-20261126-1457/breinzzy/best-household-budget-site-entry/reward.svg)](https://make.fun/bounty/best-household-budget-site-20261126-1457?utm_source=github&utm_medium=readme&utm_campaign=best-household-budget-site-20261126-1457)
 
-A household budget site you walk through, not a dashboard you stare at. The Alvarez family of Austin, Texas keeps its money room by room: tap the Kitchen to open the groceries, the Bedroom for the mortgage, the Garden for the plumber's bill. Behind the floor plan sits a full budget site — a ledger in ink, cash envelopes, savings milestones, a bill calendar, five months of reports and a what-if planner. Every figure reconciles: November's eight rooms add up to $4,505 spent on $7,240 brought home, with $1,200 put aside and $1,535 still unassigned.
+A household budget site you walk through, not a dashboard you stare at. The Alvarez family of Austin, Texas keeps its money room by room: tap the Kitchen to open the groceries, the Bedroom for the mortgage, the Garden for the plumber's bill. Behind the floor plan sits a full budget site — a ledger in ink, cash envelopes, savings milestones, a bill calendar, twelve months of reports with a cashflow Sankey, a mortgage and snowball simulator, a subscription audit, a stress lab and a paycheck planner. Every figure reconciles: November's eight rooms add up to $4,505 spent on $7,240 brought home, with $1,200 put aside and $1,535 still unassigned.
 
 ## Run it
 
@@ -37,7 +37,7 @@ Then open http://localhost:8080. No build step, no network — the site is plain
 | Garage | Getting around | $402.15 of $420 |
 | Garden | Home & garden | $601.55 of $600 — over by $1.55 |
 
-Five months, July to November, come to $20,476. The emergency fund stands at $7,850 of $10,000 and fills in March 2027 at $550 a month.
+Twelve months, December to November, come to $48,763.70. The emergency fund stands at $7,850 of $10,000 and fills in March 2027 at $500 a month. The mortgage stands at $212,000 at 6.25% — $1,350 a month, free in March 2054, or 88 months sooner with $200 extra a month.
 
 ---
 
